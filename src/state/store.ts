@@ -359,6 +359,11 @@ export function setChannelPrefs(channelId: string, prefs: Partial<ChannelPrefs>)
       updates.push("updated_at = datetime('now')");
       values.push(channelId);
       db.prepare(`UPDATE channel_prefs SET ${updates.join(', ')} WHERE channel_id = ?`).run(...values);
+
+      // Re-read from DB so cache reflects authoritative state
+      const row = db.prepare('SELECT * FROM channel_prefs WHERE channel_id = ?').get(channelId) as any;
+      if (!row) throw new Error(`Cache sync failed: channel_prefs row missing after update for ${channelId}`);
+      ensurePrefsCache().set(channelId, _rowToChannelPrefs(row));
     }
   } else {
     db.prepare(
@@ -376,11 +381,10 @@ export function setChannelPrefs(channelId: string, prefs: Partial<ChannelPrefs>)
       prefs.sessionMode ?? null,
       prefs.disabledSkills?.length ? JSON.stringify(prefs.disabledSkills) : null,
     );
-  }
 
-  // Re-read from DB so cache reflects authoritative state
-  const row = db.prepare('SELECT * FROM channel_prefs WHERE channel_id = ?').get(channelId) as any;
-  if (row) {
+    // Re-read from DB so cache reflects authoritative state
+    const row = db.prepare('SELECT * FROM channel_prefs WHERE channel_id = ?').get(channelId) as any;
+    if (!row) throw new Error(`Cache sync failed: channel_prefs row missing after insert for ${channelId}`);
     ensurePrefsCache().set(channelId, _rowToChannelPrefs(row));
   }
 }
@@ -538,9 +542,8 @@ export function setWorkspaceOverride(botName: string, workingDirectory: string, 
 
   // Re-read from DB so createdAt is authoritative
   const row = db.prepare('SELECT * FROM workspace_overrides WHERE bot_name = ?').get(botName) as any;
-  if (row) {
-    ensureWorkspaceOverridesCache().set(botName, _rowToWorkspaceOverride(row));
-  }
+  if (!row) throw new Error(`Cache sync failed: workspace_overrides row missing after write for ${botName}`);
+  ensureWorkspaceOverridesCache().set(botName, _rowToWorkspaceOverride(row));
 }
 
 export function removeWorkspaceOverride(botName: string): void {
@@ -671,9 +674,8 @@ export function addDynamicChannel(channel: Omit<DynamicChannel, 'createdAt' | 'u
 
   // Re-read from DB so cache reflects authoritative state (including timestamps)
   const row = db.prepare('SELECT * FROM dynamic_channels WHERE channel_id = ?').get(channel.channelId) as any;
-  if (row) {
-    ensureDynamicChannelsCache().set(channel.channelId, mapDynamicChannelRow(row));
-  }
+  if (!row) throw new Error(`Cache sync failed: dynamic_channels row missing after write for ${channel.channelId}`);
+  ensureDynamicChannelsCache().set(channel.channelId, mapDynamicChannelRow(row));
 }
 
 export function removeDynamicChannel(channelId: string): void {
