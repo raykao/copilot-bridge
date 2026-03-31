@@ -461,7 +461,9 @@ function ensureWorkspaceOverridesCache(): Map<string, WorkspaceOverride> {
 
 export function getWorkspaceOverride(botName: string): WorkspaceOverride | null {
   const cache = ensureWorkspaceOverridesCache();
-  return cache.get(botName) ?? null;
+  const entry = cache.get(botName);
+  if (!entry) return null;
+  return { ...entry, allowPaths: [...entry.allowPaths] };
 }
 
 export function setWorkspaceOverride(botName: string, workingDirectory: string, allowPaths?: string[]): void {
@@ -490,7 +492,7 @@ export function removeWorkspaceOverride(botName: string): void {
 
 export function listWorkspaceOverrides(): WorkspaceOverride[] {
   const cache = ensureWorkspaceOverridesCache();
-  return Array.from(cache.values());
+  return Array.from(cache.values(), entry => ({ ...entry, allowPaths: [...entry.allowPaths] }));
 }
 
 /** Reset workspace overrides cache (for testing). */
