@@ -30,6 +30,11 @@ function key(label: string): string {
   return `__test_cache_${RUN_ID}_${label}`;
 }
 
+/** Raw DB handle for creating cache/DB divergence in tests. */
+function rawDb() {
+  return store._getDbForTesting();
+}
+
 // ---------------------------------------------------------------------------
 // 1. Channel Sessions Cache
 // ---------------------------------------------------------------------------
@@ -95,11 +100,23 @@ describe('Channel Sessions Cache', () => {
   it('_resetChannelSessionsCache causes re-warm from DB on next access', () => {
     const ch = key('sess-rewarm');
     ids.push(ch);
-    store.setChannelSession(ch, 'persisted');
-    // Reset wipes in-memory map
+    store.setChannelSession(ch, 'first');
     store._resetChannelSessionsCache();
-    // Next get must re-load from DB and find the row
-    expect(store.getChannelSession(ch)).toBe('persisted');
+    // Overwrite DB value while cache is null
+    store.setChannelSession(ch, 'second');
+    store._resetChannelSessionsCache();
+    // Re-warm from DB must return 'second', not 'first'
+    expect(store.getChannelSession(ch)).toBe('second');
+  });
+
+  it('reads come from cache, not DB (stale-read proof)', () => {
+    const ch = key('sess-stale');
+    ids.push(ch);
+    store.setChannelSession(ch, 'cached-value');
+    // Delete the row directly from DB, bypassing the cache
+    rawDb().prepare('DELETE FROM channel_sessions WHERE channel_id = ?').run(ch);
+    // Cache still holds the value
+    expect(store.getChannelSession(ch)).toBe('cached-value');
   });
 });
 
@@ -155,9 +172,24 @@ describe('Channel Prefs Cache', () => {
     const ch = key('prefs-rewarm');
     store.setChannelPrefs(ch, { model: 'sonnet' });
     store._resetPrefsCache();
+    // Overwrite via store (writes to DB + cache), then reset again
+    store.setChannelPrefs(ch, { model: 'opus' });
+    store._resetPrefsCache();
+    // Must re-warm from DB and return 'opus'
     const prefs = store.getChannelPrefs(ch);
     expect(prefs).not.toBeNull();
-    expect(prefs!.model).toBe('sonnet');
+    expect(prefs!.model).toBe('opus');
+  });
+
+  it('reads come from cache, not DB (stale-read proof)', () => {
+    const ch = key('prefs-stale');
+    store.setChannelPrefs(ch, { model: 'cached-model' });
+    // Delete the row directly from DB, bypassing the cache
+    rawDb().prepare('DELETE FROM channel_prefs WHERE channel_id = ?').run(ch);
+    // Cache still holds the value
+    const prefs = store.getChannelPrefs(ch);
+    expect(prefs).not.toBeNull();
+    expect(prefs!.model).toBe('cached-model');
   });
 });
 
@@ -234,11 +266,27 @@ describe('Workspace Overrides Cache', () => {
   it('_resetWorkspaceOverridesCache causes re-warm from DB on next access', () => {
     const bot = key('ws-rewarm');
     bots.push(bot);
-    store.setWorkspaceOverride(bot, '/rewarm', []);
+    store.setWorkspaceOverride(bot, '/first', []);
     store._resetWorkspaceOverridesCache();
+    store.setWorkspaceOverride(bot, '/second', []);
+    store._resetWorkspaceOverridesCache();
+    // Must re-warm from DB and return '/second'
     const ov = store.getWorkspaceOverride(bot);
     expect(ov).not.toBeNull();
-    expect(ov!.workingDirectory).toBe('/rewarm');
+    expect(ov!.workingDirectory).toBe('/second');
+  });
+
+  it('reads come from cache, not DB (stale-read proof)', () => {
+    const bot = key('ws-stale');
+    bots.push(bot);
+    store.setWorkspaceOverride(bot, '/cached', ['x']);
+    // Delete the row directly from DB, bypassing the cache
+    rawDb().prepare('DELETE FROM workspace_overrides WHERE bot_name = ?').run(bot);
+    // Cache still holds the value
+    const ov = store.getWorkspaceOverride(bot);
+    expect(ov).not.toBeNull();
+    expect(ov!.workingDirectory).toBe('/cached');
+    expect(ov!.allowPaths).toEqual(['x']);
   });
 });
 
@@ -274,9 +322,21 @@ describe('Global Settings Cache', () => {
 
   it('_resetSettingsCache causes re-warm from DB on next access', () => {
     const k = key('setting-rewarm');
-    store.setGlobalSetting(k, 'persisted-value');
+    store.setGlobalSetting(k, 'v1');
     store._resetSettingsCache();
-    expect(store.getGlobalSetting(k)).toBe('persisted-value');
+    store.setGlobalSetting(k, 'v2');
+    store._resetSettingsCache();
+    // Must re-warm from DB and return 'v2'
+    expect(store.getGlobalSetting(k)).toBe('v2');
+  });
+
+  it('reads come from cache, not DB (stale-read proof)', () => {
+    const k = key('setting-stale');
+    store.setGlobalSetting(k, 'cached-val');
+    // Delete the row directly from DB, bypassing the cache
+    rawDb().prepare('DELETE FROM settings WHERE key = ?').run(k);
+    // Cache still holds the value
+    expect(store.getGlobalSetting(k)).toBe('cached-val');
   });
 });
 
@@ -383,9 +443,51 @@ describe('Dynamic Channels Cache', () => {
       isDM: false,
     });
     store._resetDynamicChannelsCache();
+    store.addDynamicChannel({
+      channelId: id,
+      platform: 'teams',
+      name: 'updated-ch',
+      workingDirectory: '/rw2',
+      isDM: true,
+    });
+    store._resetDynamicChannelsCache();
+    // Must re-warm from DB and return the updated values
     const ch = store.getDynamicChannel(id);
     expect(ch).not.toBeNull();
-    expect(ch!.platform).toBe('discord');
+    expect(ch!.platform).toBe('teams');
+  });
+
+  it('reads come from cache, not DB (stale-read proof)', () => {
+    const id = key('dyn-stale');
+    channelIds.push(id);
+    store.addDynamicChannel({
+      channelId: id,
+      platform: 'slack',
+      name: 'cached-ch',
+      workingDirectory: '/cached',
+      isDM: false,
+    });
+    // Delete the row directly from DB, bypassing the cache
+    rawDb().prepare('DELETE FROM dynamic_channels WHERE channel_id = ?').run(id);
+    // Cache still holds the value
+    const ch = store.getDynamicChannel(id);
+    expect(ch).not.toBeNull();
+    expect(ch!.name).toBe('cached-ch');
+  });
+
+  it('addDynamicChannel upsert updates an existing cache entry', () => {
+    const id = key('dyn-upsert');
+    channelIds.push(id);
+    store.addDynamicChannel({ channelId: id, platform: 'slack', name: 'original', workingDirectory: '/a', isDM: false });
+    store.addDynamicChannel({ channelId: id, platform: 'teams', name: 'updated', workingDirectory: '/b', isDM: true });
+
+    const ch = store.getDynamicChannel(id)!;
+    expect(ch.platform).toBe('teams');
+    expect(ch.name).toBe('updated');
+    expect(ch.workingDirectory).toBe('/b');
+    expect(ch.isDM).toBe(true);
+    // Only one entry in the list
+    expect(store.getDynamicChannels().filter(c => c.channelId === id)).toHaveLength(1);
   });
 });
 

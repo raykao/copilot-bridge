@@ -914,3 +914,8 @@ export function closeDb(): void {
   _settingsCache = null;
   _dynamicChannelsCache = null;
 }
+
+/** Expose raw DB handle for testing (bypasses cache to create divergence scenarios). */
+export function _getDbForTesting(): Database.Database {
+  return getDb();
+}
