@@ -226,10 +226,34 @@ function getDb(): Database.Database {
 
 // --- Channel Sessions ---
 
-export function getChannelSession(channelId: string): string | null {
+// In-memory cache: Map<channelId, sessionId>
+let _channelSessionsCache: Map<string, string> | null = null;
+
+/** Warm the channel sessions cache from the database. */
+export function warmChannelSessionsCache(): void {
   const db = getDb();
-  const row = db.prepare('SELECT session_id FROM channel_sessions WHERE channel_id = ?').get(channelId) as { session_id: string } | undefined;
-  return row?.session_id ?? null;
+  const rows = db.prepare('SELECT channel_id, session_id FROM channel_sessions').all() as any[];
+  _channelSessionsCache = new Map();
+  for (const row of rows) {
+    _channelSessionsCache.set(row.channel_id, row.session_id);
+  }
+}
+
+function ensureChannelSessionsCache(): Map<string, string> {
+  if (!_channelSessionsCache) {
+    warmChannelSessionsCache();
+  }
+  return _channelSessionsCache!;
+}
+
+/** Reset channel sessions cache (for testing). */
+export function _resetChannelSessionsCache(): void {
+  _channelSessionsCache = null;
+}
+
+export function getChannelSession(channelId: string): string | null {
+  const cache = ensureChannelSessionsCache();
+  return cache.get(channelId) ?? null;
 }
 
 export function setChannelSession(channelId: string, sessionId: string): void {
@@ -237,17 +261,18 @@ export function setChannelSession(channelId: string, sessionId: string): void {
   db.prepare(
     'INSERT OR REPLACE INTO channel_sessions (channel_id, session_id, created_at) VALUES (?, ?, datetime(\'now\'))'
   ).run(channelId, sessionId);
+  ensureChannelSessionsCache().set(channelId, sessionId);
 }
 
 export function clearChannelSession(channelId: string): void {
   const db = getDb();
   db.prepare('DELETE FROM channel_sessions WHERE channel_id = ?').run(channelId);
+  ensureChannelSessionsCache().delete(channelId);
 }
 
 export function getAllChannelSessions(): Array<{ channelId: string; sessionId: string }> {
-  const db = getDb();
-  const rows = db.prepare('SELECT channel_id, session_id FROM channel_sessions').all() as any[];
-  return rows.map(r => ({ channelId: r.channel_id, sessionId: r.session_id }));
+  const cache = ensureChannelSessionsCache();
+  return Array.from(cache.entries(), ([channelId, sessionId]) => ({ channelId, sessionId }));
 }
 
 // --- Channel Preferences ---
@@ -265,22 +290,50 @@ export interface ChannelPrefs {
   disabledSkills?: string[];
 }
 
-export function getChannelPrefs(channelId: string): ChannelPrefs | null {
-  const db = getDb();
-  const row = db.prepare('SELECT * FROM channel_prefs WHERE channel_id = ?').get(channelId) as any;
-  if (!row) return null;
+// In-memory cache: Map<channelId, ChannelPrefs>
+let _prefsCache: Map<string, ChannelPrefs> | null = null;
+
+function _rowToChannelPrefs(row: any): ChannelPrefs {
   return {
     model: row.model ?? undefined,
     provider: row.provider ?? null,
     agent: row.agent,
     verbose: row.verbose != null ? !!row.verbose : undefined,
-
     threadedReplies: row.threaded_replies != null ? !!row.threaded_replies : undefined,
     permissionMode: row.permission_mode ?? undefined,
     reasoningEffort: row.reasoning_effort ?? null,
     sessionMode: row.session_mode ?? undefined,
     disabledSkills: row.disabled_skills ? safeParseStringArray(row.disabled_skills) : undefined,
   };
+}
+
+/** Warm the channel prefs cache from the database. */
+export function warmPrefsCache(): void {
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM channel_prefs').all() as any[];
+  _prefsCache = new Map();
+  for (const row of rows) {
+    _prefsCache.set(row.channel_id, _rowToChannelPrefs(row));
+  }
+}
+
+function ensurePrefsCache(): Map<string, ChannelPrefs> {
+  if (!_prefsCache) {
+    warmPrefsCache();
+  }
+  return _prefsCache!;
+}
+
+/** Reset channel prefs cache (for testing). */
+export function _resetPrefsCache(): void {
+  _prefsCache = null;
+}
+
+export function getChannelPrefs(channelId: string): ChannelPrefs | null {
+  const cache = ensurePrefsCache();
+  const entry = cache.get(channelId);
+  if (!entry) return null;
+  return { ...entry, disabledSkills: entry.disabledSkills ? [...entry.disabledSkills] : undefined };
 }
 
 export function setChannelPrefs(channelId: string, prefs: Partial<ChannelPrefs>): void {
@@ -323,6 +376,12 @@ export function setChannelPrefs(channelId: string, prefs: Partial<ChannelPrefs>)
       prefs.sessionMode ?? null,
       prefs.disabledSkills?.length ? JSON.stringify(prefs.disabledSkills) : null,
     );
+  }
+
+  // Re-read from DB so cache reflects authoritative state
+  const row = db.prepare('SELECT * FROM channel_prefs WHERE channel_id = ?').get(channelId) as any;
+  if (row) {
+    ensurePrefsCache().set(channelId, _rowToChannelPrefs(row));
   }
 }
 
@@ -502,10 +561,34 @@ export function _resetWorkspaceOverridesCache(): void {
 
 // --- Global Settings ---
 
-export function getGlobalSetting(key: string): string | null {
+// In-memory cache: Map<key, value>
+let _settingsCache: Map<string, string> | null = null;
+
+/** Warm the global settings cache from the database. */
+export function warmSettingsCache(): void {
   const db = getDb();
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
-  return row?.value ?? null;
+  const rows = db.prepare('SELECT key, value FROM settings').all() as any[];
+  _settingsCache = new Map();
+  for (const row of rows) {
+    _settingsCache.set(row.key, row.value);
+  }
+}
+
+function ensureSettingsCache(): Map<string, string> {
+  if (!_settingsCache) {
+    warmSettingsCache();
+  }
+  return _settingsCache!;
+}
+
+/** Reset global settings cache (for testing). */
+export function _resetSettingsCache(): void {
+  _settingsCache = null;
+}
+
+export function getGlobalSetting(key: string): string | null {
+  const cache = ensureSettingsCache();
+  return cache.get(key) ?? null;
 }
 
 export function setGlobalSetting(key: string, value: string): void {
@@ -514,6 +597,7 @@ export function setGlobalSetting(key: string, value: string): void {
     `INSERT INTO settings (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`
   ).run(key, value);
+  ensureSettingsCache().set(key, value);
 }
 
 // --- Dynamic Channels ---
@@ -532,6 +616,32 @@ export interface DynamicChannel {
   isDM: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+// In-memory cache: Map<channelId, DynamicChannel>
+let _dynamicChannelsCache: Map<string, DynamicChannel> | null = null;
+
+/** Warm the dynamic channels cache from the database. */
+export function warmDynamicChannelsCache(): void {
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM dynamic_channels ORDER BY created_at').all() as any[];
+  _dynamicChannelsCache = new Map();
+  for (const row of rows) {
+    const channel = mapDynamicChannelRow(row);
+    _dynamicChannelsCache.set(channel.channelId, channel);
+  }
+}
+
+function ensureDynamicChannelsCache(): Map<string, DynamicChannel> {
+  if (!_dynamicChannelsCache) {
+    warmDynamicChannelsCache();
+  }
+  return _dynamicChannelsCache!;
+}
+
+/** Reset dynamic channels cache (for testing). */
+export function _resetDynamicChannelsCache(): void {
+  _dynamicChannelsCache = null;
 }
 
 export function addDynamicChannel(channel: Omit<DynamicChannel, 'createdAt' | 'updatedAt'>): void {
@@ -558,24 +668,30 @@ export function addDynamicChannel(channel: Omit<DynamicChannel, 'createdAt' | 'u
     channel.verbose != null ? (channel.verbose ? 1 : 0) : null,
     channel.isDM ? 1 : 0,
   );
+
+  // Re-read from DB so cache reflects authoritative state (including timestamps)
+  const row = db.prepare('SELECT * FROM dynamic_channels WHERE channel_id = ?').get(channel.channelId) as any;
+  if (row) {
+    ensureDynamicChannelsCache().set(channel.channelId, mapDynamicChannelRow(row));
+  }
 }
 
 export function removeDynamicChannel(channelId: string): void {
   const db = getDb();
   db.prepare('DELETE FROM dynamic_channels WHERE channel_id = ?').run(channelId);
+  ensureDynamicChannelsCache().delete(channelId);
 }
 
 export function getDynamicChannel(channelId: string): DynamicChannel | null {
-  const db = getDb();
-  const row = db.prepare('SELECT * FROM dynamic_channels WHERE channel_id = ?').get(channelId) as any;
-  if (!row) return null;
-  return mapDynamicChannelRow(row);
+  const cache = ensureDynamicChannelsCache();
+  const entry = cache.get(channelId);
+  if (!entry) return null;
+  return { ...entry };
 }
 
 export function getDynamicChannels(): DynamicChannel[] {
-  const db = getDb();
-  const rows = db.prepare('SELECT * FROM dynamic_channels ORDER BY created_at').all() as any[];
-  return rows.map(mapDynamicChannelRow);
+  const cache = ensureDynamicChannelsCache();
+  return Array.from(cache.values(), entry => ({ ...entry }));
 }
 
 function mapDynamicChannelRow(row: any): DynamicChannel {
@@ -778,8 +894,21 @@ export function getTaskHistory(channelId: string, limit = 20): TaskHistoryEntry[
 
 // --- Cleanup ---
 
+/** Warm all in-memory caches from the database. Call at startup. */
+export function warmAllCaches(): void {
+  warmChannelSessionsCache();
+  warmPrefsCache();
+  warmWorkspaceOverridesCache();
+  warmSettingsCache();
+  warmDynamicChannelsCache();
+}
+
 export function closeDb(): void {
   _db?.close();
   _db = null;
+  _channelSessionsCache = null;
+  _prefsCache = null;
   _workspaceOverridesCache = null;
+  _settingsCache = null;
+  _dynamicChannelsCache = null;
 }
