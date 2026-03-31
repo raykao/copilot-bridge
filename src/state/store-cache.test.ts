@@ -101,11 +101,14 @@ describe('Channel Sessions Cache', () => {
     const ch = key('sess-rewarm');
     ids.push(ch);
     store.setChannelSession(ch, 'first');
+    // Write 'second' directly to DB, bypassing cache
+    rawDb()
+      .prepare("INSERT OR REPLACE INTO channel_sessions (channel_id, session_id, created_at) VALUES (?, ?, datetime('now'))")
+      .run(ch, 'second');
+    // Without reset, cache still returns 'first'
+    expect(store.getChannelSession(ch)).toBe('first');
     store._resetChannelSessionsCache();
-    // Overwrite DB value while cache is null
-    store.setChannelSession(ch, 'second');
-    store._resetChannelSessionsCache();
-    // Re-warm from DB must return 'second', not 'first'
+    // After reset, must re-warm from DB and return 'second'
     expect(store.getChannelSession(ch)).toBe('second');
   });
 
@@ -171,14 +174,15 @@ describe('Channel Prefs Cache', () => {
   it('_resetPrefsCache causes re-warm from DB on next access', () => {
     const ch = key('prefs-rewarm');
     store.setChannelPrefs(ch, { model: 'sonnet' });
+    // Update model directly in DB, bypassing cache
+    rawDb()
+      .prepare("UPDATE channel_prefs SET model = ? WHERE channel_id = ?")
+      .run('opus', ch);
+    // Without reset, cache still returns 'sonnet'
+    expect(store.getChannelPrefs(ch)!.model).toBe('sonnet');
     store._resetPrefsCache();
-    // Overwrite via store (writes to DB + cache), then reset again
-    store.setChannelPrefs(ch, { model: 'opus' });
-    store._resetPrefsCache();
-    // Must re-warm from DB and return 'opus'
-    const prefs = store.getChannelPrefs(ch);
-    expect(prefs).not.toBeNull();
-    expect(prefs!.model).toBe('opus');
+    // After reset, must re-warm from DB and return 'opus'
+    expect(store.getChannelPrefs(ch)!.model).toBe('opus');
   });
 
   it('reads come from cache, not DB (stale-read proof)', () => {
@@ -267,13 +271,15 @@ describe('Workspace Overrides Cache', () => {
     const bot = key('ws-rewarm');
     bots.push(bot);
     store.setWorkspaceOverride(bot, '/first', []);
+    // Update directly in DB, bypassing cache
+    rawDb()
+      .prepare("UPDATE workspace_overrides SET working_directory = ? WHERE bot_name = ?")
+      .run('/second', bot);
+    // Without reset, cache still returns '/first'
+    expect(store.getWorkspaceOverride(bot)!.workingDirectory).toBe('/first');
     store._resetWorkspaceOverridesCache();
-    store.setWorkspaceOverride(bot, '/second', []);
-    store._resetWorkspaceOverridesCache();
-    // Must re-warm from DB and return '/second'
-    const ov = store.getWorkspaceOverride(bot);
-    expect(ov).not.toBeNull();
-    expect(ov!.workingDirectory).toBe('/second');
+    // After reset, must re-warm from DB and return '/second'
+    expect(store.getWorkspaceOverride(bot)!.workingDirectory).toBe('/second');
   });
 
   it('reads come from cache, not DB (stale-read proof)', () => {
@@ -323,10 +329,14 @@ describe('Global Settings Cache', () => {
   it('_resetSettingsCache causes re-warm from DB on next access', () => {
     const k = key('setting-rewarm');
     store.setGlobalSetting(k, 'v1');
+    // Update directly in DB, bypassing cache
+    rawDb()
+      .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+      .run(k, 'v2');
+    // Without reset, cache still returns 'v1'
+    expect(store.getGlobalSetting(k)).toBe('v1');
     store._resetSettingsCache();
-    store.setGlobalSetting(k, 'v2');
-    store._resetSettingsCache();
-    // Must re-warm from DB and return 'v2'
+    // After reset, must re-warm from DB and return 'v2'
     expect(store.getGlobalSetting(k)).toBe('v2');
   });
 
@@ -442,19 +452,15 @@ describe('Dynamic Channels Cache', () => {
       workingDirectory: '/rw',
       isDM: false,
     });
+    // Update directly in DB, bypassing cache
+    rawDb()
+      .prepare("UPDATE dynamic_channels SET platform = ? WHERE channel_id = ?")
+      .run('teams', id);
+    // Without reset, cache still returns 'discord'
+    expect(store.getDynamicChannel(id)!.platform).toBe('discord');
     store._resetDynamicChannelsCache();
-    store.addDynamicChannel({
-      channelId: id,
-      platform: 'teams',
-      name: 'updated-ch',
-      workingDirectory: '/rw2',
-      isDM: true,
-    });
-    store._resetDynamicChannelsCache();
-    // Must re-warm from DB and return the updated values
-    const ch = store.getDynamicChannel(id);
-    expect(ch).not.toBeNull();
-    expect(ch!.platform).toBe('teams');
+    // After reset, must re-warm from DB and return 'teams'
+    expect(store.getDynamicChannel(id)!.platform).toBe('teams');
   });
 
   it('reads come from cache, not DB (stale-read proof)', () => {
