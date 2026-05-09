@@ -21,6 +21,25 @@ export interface PlatformConfig {
   access?: AccessConfig;            // platform-level access control (takes precedence over bot-level)
 }
 
+export interface HttpApiKeyConfig {
+  secret: string;                    // "env:VAR_NAME" -- resolved at startup
+  allowedAgents: string[];           // ["*"] or ["bob", "lal"]
+  allowedOps: string[];              // ["card:create", "card:read", ...]
+}
+
+export interface HttpEventBufferConfig {
+  maxEventsPerCard?: number;         // default 1000
+}
+
+export interface HttpPlatformConfig extends PlatformConfig {
+  enabled: boolean;
+  bind?: string;                     // default "127.0.0.1"
+  port?: number;                     // default 7878
+  bots?: Record<string, BotConfig>;  // reuse existing BotConfig
+  apiKeys: Record<string, HttpApiKeyConfig>;
+  eventBuffer?: HttpEventBufferConfig;
+}
+
 // Channel configuration
 export interface ChannelConfig {
   id: string;
@@ -86,7 +105,7 @@ export interface BridgeTelemetryConfig {
 }
 
 export interface AppConfig {
-  platforms: Record<string, PlatformConfig>;
+  platforms: Record<string, PlatformConfig | HttpPlatformConfig>;
   channels: ChannelConfig[];
   defaults: {
     model: string;
