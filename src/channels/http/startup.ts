@@ -6,6 +6,7 @@ import { registerAgentCardCatalogRoute, registerAgentCardRoutes } from './routes
 import { registerAgentRoutes } from './routes/agents.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerA2AMessageSendRoute } from './routes/a2a-message-send.js';
+import { registerA2AMessageStreamRoute } from './routes/a2a-message-stream.js';
 import { registerRunEventsRoutes } from './routes/runs-events.js';
 import { registerRunStreamRoutes } from './routes/runs-stream.js';
 import { registerRunResumeRoutes } from './routes/runs-resume.js';
@@ -120,6 +121,20 @@ export function registerHttpAcpRoutes(app: FastifyInstance, deps: HttpAcpRouteDe
       await deps.registerChannel(channelId, bot);
       return deps.createSessionWithPermissions(channelId, bot, onPermissionRequest);
     },
+  });
+  registerA2AMessageStreamRoute(app, {
+    adapter: deps.adapter,
+    bots: deps.bots,
+    runRegistry,
+    permissionStore,
+    pendingPermissionStore,
+    checkPermission: deps.checkPermission,
+    createSessionWithPermissions: async (channelId, bot, onPermissionRequest) => {
+      await deps.registerChannel(channelId, bot);
+      return deps.createSessionWithPermissions(channelId, bot, onPermissionRequest);
+    },
+    subscribeToSessionEvents: deps.subscribeToSessionEvents,
+    getSession: deps.getSession,
   });
   registerRunEventsRoutes(app, { runRegistry, getSession: deps.getSession });
   registerRunStreamRoutes(app, {
