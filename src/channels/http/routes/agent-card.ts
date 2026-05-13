@@ -42,6 +42,20 @@ export function registerAgentCardRoutes(app: FastifyInstance, deps: AgentCardRou
   );
 }
 
+export function registerAgentCardCatalogRoute(app: FastifyInstance, deps: AgentCardRouteDeps): void {
+  app.get('/v1/agents/cards', async (request, reply) => {
+    if (!request.apiKey || !canPerformOp(request.apiKey, 'agent:read')) {
+      return reply.status(403).send({ error: 'Forbidden' });
+    }
+
+    const cards = Object.entries(deps.bots)
+      .filter(([name]) => canAccessAgent(request.apiKey!, name))
+      .map(([name, bot]) => buildAgentCard(name, bot, deps));
+
+    return { cards };
+  });
+}
+
 export function buildAgentCard(
   name: string,
   bot: AgentCardBotConfig,

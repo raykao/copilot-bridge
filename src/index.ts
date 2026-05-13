@@ -22,6 +22,8 @@ import os from 'node:os';
 import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig, HttpPlatformConfig } from './types.js';
 
 const log = createLogger('bridge');
+const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
+const bridgeVersion = packageJson.version ?? '0.0.0';
 
 // Active streaming responses, keyed by channelId
 const activeStreams = new Map<string, string>(); // channelId → streamKey
@@ -573,7 +575,7 @@ async function main(): Promise<void> {
 
     const bind = httpPlatform.bind ?? '127.0.0.1';
     const port = httpPlatform.port ?? 7878;
-
+    const publicBaseUrl = httpPlatform.publicBaseUrl ?? process.env.BRIDGE_PUBLIC_BASE_URL ?? `http://${bind}:${port}`;
 
     const httpBots = buildHttpRouteBots(httpPlatform);
     const authConfig = buildHttpAuthConfig(httpPlatform, getHttpApiKeySecret);
@@ -585,6 +587,8 @@ async function main(): Promise<void> {
       registerHttpAcpRoutes(server, {
         adapter: createdHttpAdapter,
         bots: httpBots,
+        publicBaseUrl,
+        bridgeVersion,
         registerChannel: registerHttpChannel,
         createSessionWithPermissions: async (channelId, _bot, onPermissionRequest) => {
           const { sessionId } = await sessionManager.ensureSession(channelId, { onPermissionRequest });

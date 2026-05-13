@@ -33,6 +33,7 @@ export interface HttpPlatformConfig extends PlatformConfig {
   enabled: boolean;
   bind?: string;                     // default "127.0.0.1"
   port?: number;                     // default 7878
+  publicBaseUrl?: string;
   apiKeys: Record<string, HttpApiKeyConfig>;
 }
 
