@@ -1,32 +1,10 @@
+import type { FastifyInstance } from 'fastify';
 import type { BotConfig } from '../../../types.js';
 import type { AgentCard } from '../agent-card-types.js';
+import { canAccessAgent, canPerformOp } from '../auth.js';
 
 interface AgentCardBotConfig extends Pick<BotConfig, 'agent' | 'token'> {
   model?: string;
-}
-
-interface ResolvedApiKey {
-  allowedAgents: string[];
-  allowedOps: string[];
-}
-
-interface AgentCardRequest {
-  params: { name: string };
-  apiKey?: ResolvedApiKey;
-}
-
-interface AgentCardReply {
-  status(code: number): {
-    send(payload: unknown): unknown;
-  };
-}
-
-interface AgentCardRouteApp {
-  get<RouteOptions>(
-    path: string,
-    options: unknown,
-    handler: (request: AgentCardRequest, reply: AgentCardReply) => Promise<unknown> | unknown,
-  ): void;
 }
 
 export interface AgentCardRouteDeps {
@@ -41,10 +19,9 @@ export interface AgentCardRouteDeps {
 const DEFAULT_INPUT_MODES = ['text/plain'];
 const DEFAULT_OUTPUT_MODES = ['text/plain'];
 
-export function registerAgentCardRoutes(app: AgentCardRouteApp, deps: AgentCardRouteDeps): void {
+export function registerAgentCardRoutes(app: FastifyInstance, deps: AgentCardRouteDeps): void {
   app.get<{ Params: { name: string } }>(
     '/agents/:name/.well-known/agent-card.json',
-    {},
     async (request, reply) => {
       if (!request.apiKey || !canPerformOp(request.apiKey, 'agent:read')) {
         return reply.status(403).send({ error: 'Forbidden' });
@@ -63,14 +40,6 @@ export function registerAgentCardRoutes(app: AgentCardRouteApp, deps: AgentCardR
       return buildAgentCard(name, bot, deps);
     },
   );
-}
-
-function canAccessAgent(apiKey: ResolvedApiKey, agentName: string): boolean {
-  return apiKey.allowedAgents.includes('*') || apiKey.allowedAgents.includes(agentName);
-}
-
-function canPerformOp(apiKey: ResolvedApiKey, op: string): boolean {
-  return apiKey.allowedOps.includes('*') || apiKey.allowedOps.includes(op);
 }
 
 export function buildAgentCard(

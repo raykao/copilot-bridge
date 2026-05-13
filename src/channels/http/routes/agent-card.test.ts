@@ -1,35 +1,37 @@
-// @ts-nocheck
+import Fastify, { type FastifyInstance } from 'fastify';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { registerAuthHook, type AuthConfig } from '../auth.js';
 import { registerAgentCardRoutes, type AgentCardRouteDeps } from './agent-card.js';
 
-const { afterEach, beforeEach, describe, expect, it } = await import('vi' + 'test');
-const { default: Fastify } = await import('fast' + 'ify');
-
 const fullAccessHeader = { authorization: 'Bearer test-secret-full' };
+const readOnlyHeader = { authorization: 'Bearer test-secret-readonly' };
 const noAgentReadHeader = { authorization: 'Bearer test-secret-noperm' };
 const botAOnlyHeader = { authorization: 'Bearer test-secret-bot-a-only' };
 
-const authKeys = [
-  {
-    secret: 'test-secret-full',
-    allowedAgents: ['*'],
-    allowedOps: ['*'],
-  },
-  {
-    secret: 'test-secret-readonly',
-    allowedAgents: ['bot-a', 'bot-b'],
-    allowedOps: ['agent:read'],
-  },
-  {
-    secret: 'test-secret-noperm',
-    allowedAgents: ['*'],
-    allowedOps: ['card:read'],
-  },
-  {
-    secret: 'test-secret-bot-a-only',
-    allowedAgents: ['bot-a'],
-    allowedOps: ['agent:read'],
-  },
-];
+const authConfig: AuthConfig = {
+  keys: new Map([
+    ['full-access', {
+      secret: 'test-secret-full',
+      allowedAgents: ['*'],
+      allowedOps: ['*'],
+    }],
+    ['read-only', {
+      secret: 'test-secret-readonly',
+      allowedAgents: ['bot-a', 'bot-b'],
+      allowedOps: ['agent:read'],
+    }],
+    ['no-agent-read', {
+      secret: 'test-secret-noperm',
+      allowedAgents: ['*'],
+      allowedOps: ['card:read'],
+    }],
+    ['bot-a-only', {
+      secret: 'test-secret-bot-a-only',
+      allowedAgents: ['bot-a'],
+      allowedOps: ['agent:read'],
+    }],
+  ]),
+};
 
 const testBots: AgentCardRouteDeps['bots'] = {
   'bot-a': { agent: 'agent-alpha', token: 'tok-a', model: 'gpt-4' },
@@ -37,18 +39,18 @@ const testBots: AgentCardRouteDeps['bots'] = {
   'bot-c': { token: 'tok-c' },
 };
 
-const cardDeps = {
+const cardDeps: AgentCardRouteDeps = {
   bots: testBots,
   publicBaseUrl: 'http://test.local',
   bridgeVersion: '9.9.9',
 };
 
 describe('registerAgentCardRoutes', () => {
-  let app;
+  let app: FastifyInstance;
 
   beforeEach(() => {
     app = Fastify({ logger: false });
-    registerTestAuthHook(app);
+    registerAuthHook(app, authConfig);
     registerAgentCardRoutes(app, cardDeps);
   });
 
@@ -61,7 +63,7 @@ describe('registerAgentCardRoutes', () => {
       const response = await app.inject({
         method: 'GET',
         url: '/agents/bot-a/.well-known/agent-card.json',
-        headers: fullAccessHeader,
+        headers: readOnlyHeader,
       });
 
       expect(response.statusCode).toBe(200);
@@ -127,7 +129,7 @@ describe('registerAgentCardRoutes', () => {
     it('strips trailing slash from publicBaseUrl for supported interface URL', async () => {
       await app.close();
       app = Fastify({ logger: false });
-      registerTestAuthHook(app);
+      registerAuthHook(app, authConfig);
       registerAgentCardRoutes(app, { ...cardDeps, publicBaseUrl: 'http://test.local/' });
 
       const response = await app.inject({
@@ -191,24 +193,3 @@ describe('registerAgentCardRoutes', () => {
     });
   });
 });
-
-function registerTestAuthHook(app) {
-  app.addHook('onRequest', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return reply.status(401).send({ error: 'Missing or invalid Authorization header' });
-    }
-
-    const token = authHeader.slice(7);
-    const matched = authKeys.find((key) => key.secret === token);
-
-    if (!matched) {
-      return reply.status(401).send({ error: 'Invalid API key' });
-    }
-
-    request.apiKey = {
-      allowedAgents: matched.allowedAgents,
-      allowedOps: matched.allowedOps,
-    };
-  });
-}
