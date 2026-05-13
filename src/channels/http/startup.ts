@@ -7,6 +7,7 @@ import { registerAgentRoutes } from './routes/agents.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerA2AMessageSendRoute } from './routes/a2a-message-send.js';
 import { registerA2AMessageStreamRoute } from './routes/a2a-message-stream.js';
+import { registerA2ATasksRoutes } from './routes/a2a-tasks.js';
 import { registerRunEventsRoutes } from './routes/runs-events.js';
 import { registerRunStreamRoutes } from './routes/runs-stream.js';
 import { registerRunResumeRoutes } from './routes/runs-resume.js';
@@ -135,6 +136,13 @@ export function registerHttpAcpRoutes(app: FastifyInstance, deps: HttpAcpRouteDe
     },
     subscribeToSessionEvents: deps.subscribeToSessionEvents,
     getSession: deps.getSession,
+  });
+  registerA2ATasksRoutes(app, {
+    bots: deps.bots,
+    runRegistry,
+    subscribeToSessionEvents: deps.subscribeToSessionEvents,
+    getSession: deps.getSession,
+    abortSession: deps.abortSession,
   });
   registerRunEventsRoutes(app, { runRegistry, getSession: deps.getSession });
   registerRunStreamRoutes(app, {
