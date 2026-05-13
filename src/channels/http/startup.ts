@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { PermissionHandler, SessionEvent } from '@github/copilot-sdk';
 import type { AuthConfig } from './auth.js';
 import type { BotConfig, HttpPlatformConfig } from '../../types.js';
-import { registerAgentCardRoutes } from './routes/agent-card.js';
+import { registerAgentCardCatalogRoute, registerAgentCardRoutes } from './routes/agent-card.js';
 import { registerAgentRoutes } from './routes/agents.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerRunEventsRoutes } from './routes/runs-events.js';
@@ -85,6 +85,11 @@ export function registerHttpAcpRoutes(app: FastifyInstance, deps: HttpAcpRouteDe
 
   registerAgentRoutes(app, { bots: deps.bots });
   registerAgentCardRoutes(app, {
+    bots: deps.bots,
+    publicBaseUrl: deps.publicBaseUrl,
+    bridgeVersion: deps.bridgeVersion,
+  });
+  registerAgentCardCatalogRoute(app, {
     bots: deps.bots,
     publicBaseUrl: deps.publicBaseUrl,
     bridgeVersion: deps.bridgeVersion,
