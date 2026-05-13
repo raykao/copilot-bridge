@@ -101,3 +101,29 @@ export function runStatusToInitialTaskState(status: RunStatus): A2ATaskState {
   if (status === 'created') return 'submitted';
   return runStatusToTaskState(status);
 }
+
+export interface A2APushNotificationAuthenticationInfo {
+  schemes: string[];
+  credentials?: string;
+}
+
+export interface A2APushNotificationConfig {
+  id?: string;
+  url: string;
+  token?: string;
+  authentication?: A2APushNotificationAuthenticationInfo;
+}
+
+export interface A2ATaskPushNotificationConfig {
+  taskId: string;
+  pushNotificationConfig: A2APushNotificationConfig;
+}
+
+export interface A2APushNotificationConfigSetParams {
+  taskId: string;
+  pushNotificationConfig: A2APushNotificationConfig;
+}
+
+export interface A2APushNotificationConfigDeleteParams {
+  id: string;
+}

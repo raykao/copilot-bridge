@@ -8,10 +8,12 @@ import { registerRunRoutes } from './routes/runs.js';
 import { registerA2AMessageSendRoute } from './routes/a2a-message-send.js';
 import { registerA2AMessageStreamRoute } from './routes/a2a-message-stream.js';
 import { registerA2ATasksRoutes } from './routes/a2a-tasks.js';
+import { registerA2APushNotificationRoutes } from './routes/a2a-push-notification.js';
 import { registerRunEventsRoutes } from './routes/runs-events.js';
 import { registerRunStreamRoutes } from './routes/runs-stream.js';
 import { registerRunResumeRoutes } from './routes/runs-resume.js';
 import { RunRegistry } from './run-registry.js';
+import { PushNotificationStore } from './push-notification-store.js';
 import { PermissionStore } from './permission-store.js';
 import { PendingPermissionStore } from './pending-permission-store.js';
 import type { HttpChannelAdapter } from './index.js';
@@ -45,6 +47,7 @@ export interface HttpAcpRouteStores {
   runRegistry: RunRegistry;
   permissionStore: PermissionStore;
   pendingPermissionStore: PendingPermissionStore;
+  pushNotificationStore: PushNotificationStore;
 }
 
 export function buildHttpAuthConfig(
@@ -83,6 +86,7 @@ export function buildHttpRouteBots(httpConfig: HttpPlatformConfig): Record<strin
 
 export function registerHttpAcpRoutes(app: FastifyInstance, deps: HttpAcpRouteDeps): HttpAcpRouteStores {
   const runRegistry = new RunRegistry();
+  const pushNotificationStore = new PushNotificationStore();
   const permissionStore = new PermissionStore();
   const pendingPermissionStore = new PendingPermissionStore();
 
@@ -144,6 +148,13 @@ export function registerHttpAcpRoutes(app: FastifyInstance, deps: HttpAcpRouteDe
     getSession: deps.getSession,
     abortSession: deps.abortSession,
   });
+  registerA2APushNotificationRoutes(app, {
+    bots: deps.bots,
+    runRegistry,
+    pushNotificationStore,
+    onConfigSet: () => undefined,
+    onConfigDeleted: () => undefined,
+  });
   registerRunEventsRoutes(app, { runRegistry, getSession: deps.getSession });
   registerRunStreamRoutes(app, {
     runRegistry,
@@ -157,5 +168,5 @@ export function registerHttpAcpRoutes(app: FastifyInstance, deps: HttpAcpRouteDe
     addPermissionRule: deps.addPermissionRule,
   });
 
-  return { runRegistry, permissionStore, pendingPermissionStore };
+  return { runRegistry, permissionStore, pendingPermissionStore, pushNotificationStore };
 }
