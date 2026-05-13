@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { PermissionHandler, SessionEvent } from '@github/copilot-sdk';
 import type { AuthConfig } from './auth.js';
 import type { BotConfig, HttpPlatformConfig } from '../../types.js';
+import { registerAgentCardRoutes } from './routes/agent-card.js';
 import { registerAgentRoutes } from './routes/agents.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerRunEventsRoutes } from './routes/runs-events.js';
@@ -19,6 +20,8 @@ export type HttpRouteBotConfig = Pick<BotConfig, 'agent' | 'token'> & {
 export interface HttpAcpRouteDeps {
   adapter: HttpChannelAdapter;
   bots: Record<string, HttpRouteBotConfig>;
+  publicBaseUrl: string;
+  bridgeVersion: string;
   registerChannel: (channelId: string, bot: string) => Promise<void>;
   createSessionWithPermissions: (
     channelId: string,
@@ -81,6 +84,11 @@ export function registerHttpAcpRoutes(app: FastifyInstance, deps: HttpAcpRouteDe
   const pendingPermissionStore = new PendingPermissionStore();
 
   registerAgentRoutes(app, { bots: deps.bots });
+  registerAgentCardRoutes(app, {
+    bots: deps.bots,
+    publicBaseUrl: deps.publicBaseUrl,
+    bridgeVersion: deps.bridgeVersion,
+  });
   registerRunRoutes(app, {
     adapter: deps.adapter,
     runRegistry,
