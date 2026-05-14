@@ -14,6 +14,7 @@ import { registerRunStreamRoutes } from './routes/runs-stream.js';
 import { registerRunResumeRoutes } from './routes/runs-resume.js';
 import { RunRegistry } from './run-registry.js';
 import { PushNotificationStore } from './push-notification-store.js';
+import { PushDelivery } from './push-delivery.js';
 import { PermissionStore } from './permission-store.js';
 import { PendingPermissionStore } from './pending-permission-store.js';
 import type { HttpChannelAdapter } from './index.js';
@@ -48,6 +49,7 @@ export interface HttpAcpRouteStores {
   permissionStore: PermissionStore;
   pendingPermissionStore: PendingPermissionStore;
   pushNotificationStore: PushNotificationStore;
+  pushDelivery: PushDelivery;
 }
 
 export function buildHttpAuthConfig(
@@ -87,6 +89,11 @@ export function buildHttpRouteBots(httpConfig: HttpPlatformConfig): Record<strin
 export function registerHttpAcpRoutes(app: FastifyInstance, deps: HttpAcpRouteDeps): HttpAcpRouteStores {
   const runRegistry = new RunRegistry();
   const pushNotificationStore = new PushNotificationStore();
+  const pushDelivery = new PushDelivery({
+    pushNotificationStore,
+    runRegistry,
+    subscribeToSessionEvents: deps.subscribeToSessionEvents,
+  });
   const permissionStore = new PermissionStore();
   const pendingPermissionStore = new PendingPermissionStore();
 
@@ -152,8 +159,8 @@ export function registerHttpAcpRoutes(app: FastifyInstance, deps: HttpAcpRouteDe
     bots: deps.bots,
     runRegistry,
     pushNotificationStore,
-    onConfigSet: () => undefined,
-    onConfigDeleted: () => undefined,
+    onConfigSet: (taskId) => pushDelivery.wireTask(taskId),
+    onConfigDeleted: (taskId) => pushDelivery.unwireTask(taskId),
   });
   registerRunEventsRoutes(app, { runRegistry, getSession: deps.getSession });
   registerRunStreamRoutes(app, {
@@ -168,5 +175,5 @@ export function registerHttpAcpRoutes(app: FastifyInstance, deps: HttpAcpRouteDe
     addPermissionRule: deps.addPermissionRule,
   });
 
-  return { runRegistry, permissionStore, pendingPermissionStore, pushNotificationStore };
+  return { runRegistry, permissionStore, pendingPermissionStore, pushNotificationStore, pushDelivery };
 }
