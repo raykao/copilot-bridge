@@ -2204,6 +2204,10 @@ async function handleSessionEvent(
 
   const channelConfig = await getChannelConfig(channelId);
   if (channelConfig.platform === 'http') {
+    // Release the channelLock so queued dispatches for this card are unblocked.
+    // Without this, waitForChannelIdle() times out after 5 minutes for every HTTP run.
+    if (event.type === 'session.idle') markIdle(channelId);
+    else if (event.type === 'session.error') markIdleImmediate(channelId);
     return;
   }
 
