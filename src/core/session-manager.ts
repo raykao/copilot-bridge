@@ -40,8 +40,8 @@ export const BRIDGE_CUSTOM_TOOLS = ['send_file', 'show_file_in_chat', 'ask_agent
 type SessionEventHandler = (sessionId: string, channelId: string, event: any) => void;
 type CustomToolHandler = (channelId: string, args: Record<string, unknown>) => Promise<unknown>;
 
-/** Simple mutex for serializing env-sensitive session creation. */
-let envLock: Promise<void> = Promise.resolve();
+/** Per-workspace mutex for serializing env-sensitive session creation. */
+const envLocks = new Map<string, Promise<void>>();
 
 /**
  * Parse a .env file into a key-value map.
@@ -82,11 +82,12 @@ async function withWorkspaceEnv<T>(workingDirectory: string, fn: () => Promise<T
   const envPath = path.join(workingDirectory, '.env');
   const vars = parseEnvFile(envPath);
 
-  // Always hold the lock for the full duration of fn() so we never run
-  // while another workspace's secrets are injected into process.env.
-  const prev = envLock;
-  let release: () => void;
-  envLock = new Promise(resolve => { release = resolve; });
+  // Hold a per-workspace lock so concurrent sessions for the same workspace
+  // don't stomp each other's injected env vars. Different workspaces run
+  // concurrently without blocking one another.
+  const prev = envLocks.get(workingDirectory) ?? Promise.resolve();
+  let release!: () => void;
+  envLocks.set(workingDirectory, new Promise<void>(resolve => { release = resolve; }));
 
   await prev;
 
@@ -94,7 +95,7 @@ async function withWorkspaceEnv<T>(workingDirectory: string, fn: () => Promise<T
     try {
       return await fn();
     } finally {
-      release!();
+      release();
     }
   }
 
@@ -116,7 +117,7 @@ async function withWorkspaceEnv<T>(workingDirectory: string, fn: () => Promise<T
         process.env[key] = saved[key];
       }
     }
-    release!();
+    release();
   }
 }
 
