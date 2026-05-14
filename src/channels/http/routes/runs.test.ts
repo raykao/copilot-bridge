@@ -100,7 +100,7 @@ describe('registerRunRoutes', () => {
         shouldSuppressCancellationTerminal,
       } as Partial<RunRegistry> as RunRegistry,
       permissionStore: { shouldApprove: vi.fn() } as unknown as PermissionStore,
-      pendingPermissionStore: { park: vi.fn() } as unknown as PendingPermissionStore,
+      pendingPermissionStore: { park: vi.fn(), resolve: vi.fn() } as unknown as PendingPermissionStore,
       checkPermission,
       createSessionWithPermissions,
       subscribeToSessionEvents,
@@ -253,6 +253,39 @@ describe('registerRunRoutes', () => {
     expect(createSessionWithPermissions).not.toHaveBeenCalled();
     expect(registerRun).not.toHaveBeenCalled();
     expect(dispatchInboundMessage).not.toHaveBeenCalled();
+  });
+
+  it('auto-denies an awaiting run and creates a new run when session has awaiting status', async () => {
+    const existingRunId = 'stale-awaiting-run';
+    const pendingResolve = vi.fn();
+    const emit = vi.fn();
+
+    getNonTerminalActiveRun.mockReturnValue(makeRunEntry({
+      runId: existingRunId,
+      channelId: 'client-session-id',
+      status: 'awaiting',
+      bot: 'test-agent',
+    }));
+    (deps.pendingPermissionStore as any).resolve = pendingResolve;
+    getEmitter.mockReturnValue(emit);
+    createSessionWithPermissions.mockResolvedValue({ sessionId: 'new-session-id' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: fullAccessHeader,
+      payload: { ...validPayload, session_id: 'client-session-id' },
+    });
+
+    expect(pendingResolve).toHaveBeenCalledWith(existingRunId, 'deny');
+    expect(updateStatus).toHaveBeenCalledWith(existingRunId, 'failed', expect.objectContaining({
+      error: 'approval abandoned: new run started',
+    }));
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'run.failed',
+      data: expect.objectContaining({ run_id: existingRunId }),
+    }));
+    expect(response.statusCode).toBe(202);
   });
 
   it('marks a run completed on session idle and permits a later run on the same session_id', async () => {
