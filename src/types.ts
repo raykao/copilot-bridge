@@ -5,6 +5,8 @@ export interface BotConfig {
   agent?: string | null;     // default agent for this bot identity
   admin?: boolean;           // admin bots can manage all workspaces
   access?: AccessConfig;     // user-level access control
+  workingDirectory?: string; // optional explicit workspace path; takes precedence over default
+  model?: string;            // optional default model id for sessions under this bot identity
 }
 
 // User-level access control

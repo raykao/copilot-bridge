@@ -6,7 +6,7 @@ import { formatEvent, formatPermissionRequest, formatUserInputRequest } from './
 import { WorkspaceWatcher, initWorkspace, getWorkspacePath } from './core/workspace-manager.js';
 import { MattermostAdapter } from './channels/mattermost/adapter.js';
 import { StreamingHandler } from './channels/mattermost/streaming.js';
-import { initStore, getChannelPrefs, setChannelPrefs, getAllChannelSessions, closeDb, listPermissionRulesForScope, addPermissionRule, removePermissionRule, clearPermissionRules, getTaskHistory, checkPermission } from './state/store.js';
+import { initStore, getChannelPrefs, setChannelPrefs, getAllChannelSessions, closeDb, listPermissionRulesForScope, addPermissionRule, removePermissionRule, clearPermissionRules, getTaskHistory, checkPermission, getWorkspaceOverride } from './state/store.js';
 import type { StateStore } from './state/types.js';
 import { extractThreadRequest, resolveThreadRoot } from './core/thread-utils.js';
 import { initScheduler, stopAll as stopScheduler, listJobs, removeJob, pauseJob, resumeJob, formatInTimezone, describeCron } from './core/scheduler.js';
@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
-import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig, HttpPlatformConfig } from './types.js';
+import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig, HttpPlatformConfig, BotConfig } from './types.js';
 
 const log = createLogger('bridge');
 const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
@@ -221,10 +221,19 @@ async function cleanupTempFiles(channelId: string): Promise<void> {
 }
 
 
-async function registerHttpChannel(channelId: string, bot: string): Promise<void> {
+export async function registerHttpChannel(channelId: string, bot: string): Promise<void> {
   if (await isConfiguredChannel(channelId)) return;
-  const workspacePath = await getWorkspacePath(bot);
-  await initWorkspace(bot);
+
+  const httpPlatform = getConfig().platforms.http as HttpPlatformConfig | undefined;
+  const botConfig = httpPlatform?.bots?.[bot] as BotConfig | undefined;
+  const workspaceOverride = await getWorkspaceOverride(bot);
+  const configuredWorkspace = botConfig?.workingDirectory?.trim();
+  const workspacePath = workspaceOverride?.workingDirectory
+    ?? (configuredWorkspace && configuredWorkspace.length > 0
+      ? configuredWorkspace
+      : await getWorkspacePath(bot));
+
+  await initWorkspace(bot, workspacePath);
   registerDynamicChannel({
     id: channelId,
     platform: 'http',
@@ -236,7 +245,7 @@ async function registerHttpChannel(channelId: string, bot: string): Promise<void
     verbose: false,
     isDM: false,
   });
-  log.info(`Registered HTTP run channel ${channelId.slice(0, 8)}... for bot "${bot}"`);
+  log.info(`Registered HTTP run channel ${channelId.slice(0, 8)}... for bot "${bot}" (workspace=${workspacePath})`);
 }
 
 function emitHttpSessionEvent(sessionId: string, channelId: string, event: unknown): void {
