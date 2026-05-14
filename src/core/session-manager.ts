@@ -1,4 +1,4 @@
-import { CopilotSession, approveAll } from '@github/copilot-sdk';
+import { CopilotSession, approveAll, type PermissionHandler } from '@github/copilot-sdk';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -38,9 +38,10 @@ const log = createLogger('session');
 export const BRIDGE_CUSTOM_TOOLS = ['send_file', 'show_file_in_chat', 'ask_agent', 'schedule', 'fetch_copilot_bridge_documentation', 'no_reply'];
 
 type SessionEventHandler = (sessionId: string, channelId: string, event: any) => void;
+type CustomToolHandler = (channelId: string, args: Record<string, unknown>) => Promise<unknown>;
 
-/** Simple mutex for serializing env-sensitive session creation. */
-let envLock: Promise<void> = Promise.resolve();
+/** Per-workspace mutex for serializing env-sensitive session creation. */
+const envLocks = new Map<string, Promise<void>>();
 
 /**
  * Parse a .env file into a key-value map.
@@ -81,11 +82,12 @@ async function withWorkspaceEnv<T>(workingDirectory: string, fn: () => Promise<T
   const envPath = path.join(workingDirectory, '.env');
   const vars = parseEnvFile(envPath);
 
-  // Always hold the lock for the full duration of fn() so we never run
-  // while another workspace's secrets are injected into process.env.
-  const prev = envLock;
-  let release: () => void;
-  envLock = new Promise(resolve => { release = resolve; });
+  // Hold a per-workspace lock so concurrent sessions for the same workspace
+  // don't stomp each other's injected env vars. Different workspaces run
+  // concurrently without blocking one another.
+  const prev = envLocks.get(workingDirectory) ?? Promise.resolve();
+  let release!: () => void;
+  envLocks.set(workingDirectory, new Promise<void>(resolve => { release = resolve; }));
 
   await prev;
 
@@ -93,7 +95,7 @@ async function withWorkspaceEnv<T>(workingDirectory: string, fn: () => Promise<T
     try {
       return await fn();
     } finally {
-      release!();
+      release();
     }
   }
 
@@ -115,7 +117,7 @@ async function withWorkspaceEnv<T>(workingDirectory: string, fn: () => Promise<T
         process.env[key] = saved[key];
       }
     }
-    release!();
+    release();
   }
 }
 
@@ -570,6 +572,7 @@ export class SessionManager {
   // Handler for send_file tool (set by index.ts, calls adapter.sendFile)
   private sendFileHandler: ((channelId: string, filePath: string, message?: string) => Promise<string>) | null = null;
   private getAdapterForChannel: ((channelId: string) => ChannelAdapter | null | Promise<ChannelAdapter | null>) | null = null;
+  private customToolHandlers = new Map<string, CustomToolHandler>();
 
   constructor(bridge: CopilotBridge) {
     this.bridge = bridge;
@@ -673,6 +676,17 @@ export class SessionManager {
     this.getAdapterForChannel = resolver;
   }
 
+  /** Register a custom tool handler supplied by platform-specific startup code. */
+  registerCustomToolHandler(toolName: string, handler: CustomToolHandler): void {
+    this.customToolHandlers.set(toolName, handler);
+  }
+
+  /** List bridge-managed custom tools available for a specific channel. */
+  async listBridgeToolNames(channelId: string): Promise<string[]> {
+    const tools = await this.buildCustomTools(channelId);
+    return tools.map(tool => tool.name);
+  }
+
   /**
    * Resolve MCP servers for a workspace: workspace config (highest priority)
    * merged on top of global servers (plugin + user config).
@@ -770,10 +784,13 @@ export class SessionManager {
   }
 
   /** Get or create a session for a channel. */
-  async ensureSession(channelId: string): Promise<{ sessionId: string; isNew: boolean }> {
+  async ensureSession(channelId: string, opts?: { onPermissionRequest?: PermissionHandler }): Promise<{ sessionId: string; isNew: boolean }> {
     // Check in-memory cache first
     const cachedSessionId = this.channelSessions.get(channelId);
     if (cachedSessionId && this.bridge.getSession(cachedSessionId)) {
+      if (opts?.onPermissionRequest) {
+        this.bridge.updatePermissionHandler(cachedSessionId, opts.onPermissionRequest);
+      }
       return { sessionId: cachedSessionId, isNew: false };
     }
 
@@ -781,7 +798,7 @@ export class SessionManager {
     const storedSessionId = await getChannelSession(channelId);
     if (storedSessionId) {
       try {
-        await this.attachSession(channelId, storedSessionId);
+        await this.attachSession(channelId, storedSessionId, opts);
         return { sessionId: storedSessionId, isNew: false };
       } catch (err) {
       log.warn(`Failed to resume session ${storedSessionId} for channel ${channelId}, creating new:`, err);
@@ -790,7 +807,7 @@ export class SessionManager {
     }
 
     // Create new session
-    const sessionId = await this.createNewSession(channelId);
+    const sessionId = await this.createNewSession(channelId, opts);
     return { sessionId, isNew: true };
   }
 
@@ -1815,7 +1832,7 @@ export class SessionManager {
     });
   }
 
-  private async createNewSession(channelId: string): Promise<string> {
+  private async createNewSession(channelId: string, opts?: { onPermissionRequest?: PermissionHandler }): Promise<string> {
     const prefs = await this.getEffectivePrefs(channelId);
     const workingDirectory = await this.resolveWorkingDirectory(channelId);
 
@@ -1874,7 +1891,7 @@ export class SessionManager {
           skillDirectories: skillDirectories.length > 0 ? skillDirectories : undefined,
           disabledSkills,
           excludedTools,
-          onPermissionRequest: (request, invocation) => this.handlePermissionRequest(channelId, request, invocation),
+          onPermissionRequest: opts?.onPermissionRequest ?? ((request, invocation) => this.handlePermissionRequest(channelId, request, invocation)),
           onUserInputRequest: (request, invocation) => this.handleUserInputRequest(channelId, request, invocation),
           customAgents: customAgents.length > 0 ? customAgents : undefined,
           tools: customTools.length > 0 ? customTools : undefined,
@@ -1925,7 +1942,7 @@ export class SessionManager {
               mcpServers: resolvedMcpServers,
               skillDirectories: skillDirectories.length > 0 ? skillDirectories : undefined,
               disabledSkills,
-              onPermissionRequest: (request, invocation) => this.handlePermissionRequest(channelId, request, invocation),
+              onPermissionRequest: opts?.onPermissionRequest ?? ((request, invocation) => this.handlePermissionRequest(channelId, request, invocation)),
               onUserInputRequest: (request, invocation) => this.handleUserInputRequest(channelId, request, invocation),
               customAgents: customAgents.length > 0 ? customAgents : undefined,
               tools: customTools.length > 0 ? customTools : undefined,
@@ -1997,7 +2014,7 @@ export class SessionManager {
     return sessionId;
   }
 
-  private async attachSession(channelId: string, sessionId: string): Promise<void> {
+  private async attachSession(channelId: string, sessionId: string, opts?: { onPermissionRequest?: PermissionHandler }): Promise<void> {
     const prefs = await this.getEffectivePrefs(channelId);
     const workingDirectory = await this.resolveWorkingDirectory(channelId);
     const defaultConfigDir = process.env.HOME ? `${process.env.HOME}/.copilot` : undefined;
@@ -2028,7 +2045,7 @@ export class SessionManager {
 
     const session = await withWorkspaceEnv(workingDirectory, () =>
       this.bridge.resumeSession(sessionId, {
-        onPermissionRequest: (request, invocation) => this.handlePermissionRequest(channelId, request, invocation),
+        onPermissionRequest: opts?.onPermissionRequest ?? ((request, invocation) => this.handlePermissionRequest(channelId, request, invocation)),
         onUserInputRequest: (request, invocation) => this.handleUserInputRequest(channelId, request, invocation),
         configDir: defaultConfigDir,
         workingDirectory,
@@ -2432,13 +2449,13 @@ export class SessionManager {
   /** Build custom tool definitions to pass to SDK session creation. */
   private async buildCustomTools(channelId: string): Promise<any[]> {
     const tools: any[] = [];
+    const channelConfig = await getChannelConfig(channelId);
+    const botName = await getChannelBotName(channelId);
 
     if (this.sendFileHandler) {
       const handler = this.sendFileHandler;
-      const config = await getChannelConfig(channelId);
-      const botName = await getChannelBotName(channelId);
       const workDir = await this.resolveWorkingDirectory(channelId);
-      const allowPaths = await getWorkspaceAllowPaths(botName, config.platform);
+      const allowPaths = await getWorkspaceAllowPaths(botName, channelConfig.platform);
 
       tools.push({
         name: 'send_file',
@@ -2484,9 +2501,7 @@ export class SessionManager {
     if (this.getAdapterForChannel) {
       const adapterResolver = this.getAdapterForChannel;
       const showWorkDir = await this.resolveWorkingDirectory(channelId);
-      const showBotName = await getChannelBotName(channelId);
-      const showConfig = await getChannelConfig(channelId);
-      const showAllowPaths = await getWorkspaceAllowPaths(showBotName, showConfig.platform);
+      const showAllowPaths = await getWorkspaceAllowPaths(botName, channelConfig.platform);
 
       tools.push({
         name: 'show_file_in_chat',
@@ -2574,9 +2589,7 @@ export class SessionManager {
     }
 
     // Admin-only onboarding tools
-    const config = await getChannelConfig(channelId);
-    const botName = await getChannelBotName(channelId);
-    const isAdmin = isBotAdmin(config.platform, botName);
+    const isAdmin = isBotAdmin(channelConfig.platform, botName);
 
     if (isAdmin && this.getAdapterForChannel) {
       const adapterResolver = this.getAdapterForChannel;
@@ -2593,7 +2606,7 @@ export class SessionManager {
 
             const teams = await adapter.getTeams();
             const appConfig = getConfig();
-            const platformConfig = appConfig.platforms[config.platform];
+            const platformConfig = appConfig.platforms[channelConfig.platform];
             const botNames = platformConfig.bots ? Object.keys(platformConfig.bots) : ['default'];
 
             return {
@@ -2650,7 +2663,7 @@ export class SessionManager {
             const result = await onboardProject(adapter, {
               projectName: args.project_name,
               botName: args.bot_name,
-              platform: config.platform,
+              platform: channelConfig.platform,
               teamId: args.team_id,
               private: args.private,
               workspacePath: args.workspace_path,

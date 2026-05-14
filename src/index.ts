@@ -1,12 +1,12 @@
-import { loadConfig, getConfig, isConfiguredChannel, registerDynamicChannel, markChannelAsDM, getChannelConfig, getPlatformBots, getPlatformAccess, getChannelBotName, isBotAdmin, getHardcodedRules, getConfigRules, reloadConfig, ConfigWatcher } from './config.js';
+import { loadConfig, getConfig, getHttpApiKeySecret, isConfiguredChannel, registerDynamicChannel, markChannelAsDM, getChannelConfig, getPlatformBots, getPlatformAccess, getChannelBotName, isBotAdmin, getHardcodedRules, getConfigRules, reloadConfig, ConfigWatcher } from './config.js';
 import { CopilotBridge } from './core/bridge.js';
-import { SessionManager, BRIDGE_CUSTOM_TOOLS, parseEnvFile } from './core/session-manager.js';
+import { SessionManager, parseEnvFile } from './core/session-manager.js';
 import { handleCommand, parseCommand } from './core/command-handler.js';
 import { formatEvent, formatPermissionRequest, formatUserInputRequest } from './core/stream-formatter.js';
 import { WorkspaceWatcher, initWorkspace, getWorkspacePath } from './core/workspace-manager.js';
 import { MattermostAdapter } from './channels/mattermost/adapter.js';
 import { StreamingHandler } from './channels/mattermost/streaming.js';
-import { initStore, getChannelPrefs, setChannelPrefs, getAllChannelSessions, closeDb, listPermissionRulesForScope, removePermissionRule, clearPermissionRules, getTaskHistory } from './state/store.js';
+import { initStore, getChannelPrefs, setChannelPrefs, getAllChannelSessions, closeDb, listPermissionRulesForScope, addPermissionRule, removePermissionRule, clearPermissionRules, getTaskHistory, checkPermission, getWorkspaceOverride } from './state/store.js';
 import type { StateStore } from './state/types.js';
 import { extractThreadRequest, resolveThreadRoot } from './core/thread-utils.js';
 import { initScheduler, stopAll as stopScheduler, listJobs, removeJob, pauseJob, resumeJob, formatInTimezone, describeCron } from './core/scheduler.js';
@@ -19,9 +19,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
-import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig } from './types.js';
+import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig, HttpPlatformConfig, BotConfig } from './types.js';
 
 const log = createLogger('bridge');
+const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
+const bridgeVersion = packageJson.version ?? '0.0.0';
 
 // Active streaming responses, keyed by channelId
 const activeStreams = new Map<string, string>(); // channelId → streamKey
@@ -52,6 +54,9 @@ const channelLocks = new Map<string, Promise<void>>();
 
 // Per-channel promise chain to serialize SESSION EVENT handling (prevents race on auto-start)
 const eventLocks = new Map<string, Promise<void>>();
+
+type HttpSessionEventSubscriber = (sessionId: string, channelId: string, event: unknown) => void;
+const httpSessionEventSubscribers = new Map<string, Set<HttpSessionEventSubscriber>>();
 
 // Channels in "quiet mode" — all streaming output suppressed until we determine
 // whether the response is NO_REPLY. Used for scheduled tasks and silent cron jobs.
@@ -213,6 +218,46 @@ async function cleanupTempFiles(channelId: string): Promise<void> {
       log.info(`Cleaned up ${files.length} temp file(s) for ${channelId.slice(0, 8)}...`);
     }
   } catch (err) { log.debug(`cleanupTempFiles(${channelId.slice(0, 8)}) failed:`, err); }
+}
+
+
+export async function registerHttpChannel(channelId: string, bot: string): Promise<void> {
+  if (await isConfiguredChannel(channelId)) return;
+
+  const httpPlatform = getConfig().platforms.http as HttpPlatformConfig | undefined;
+  const botConfig = httpPlatform?.bots?.[bot] as BotConfig | undefined;
+  const workspaceOverride = await getWorkspaceOverride(bot);
+  const configuredWorkspace = botConfig?.workingDirectory?.trim();
+  const workspacePath = workspaceOverride?.workingDirectory
+    ?? (configuredWorkspace && configuredWorkspace.length > 0
+      ? configuredWorkspace
+      : await getWorkspacePath(bot));
+
+  await initWorkspace(bot, workspacePath);
+  registerDynamicChannel({
+    id: channelId,
+    platform: 'http',
+    bot,
+    name: `Run ${channelId.slice(0, 8)}...`,
+    workingDirectory: workspacePath,
+    triggerMode: 'all',
+    threadedReplies: false,
+    verbose: false,
+    isDM: false,
+  });
+  log.info(`Registered HTTP run channel ${channelId.slice(0, 8)}... for bot "${bot}" (workspace=${workspacePath})`);
+}
+
+function emitHttpSessionEvent(sessionId: string, channelId: string, event: unknown): void {
+  const subscribers = httpSessionEventSubscribers.get(channelId);
+  if (!subscribers) return;
+  for (const handler of Array.from(subscribers)) {
+    try {
+      handler(sessionId, channelId, event);
+    } catch (err) {
+      log.warn('HTTP session event subscriber failed:', err);
+    }
+  }
 }
 
 async function getAdapterForChannel(channelId: string): Promise<{ adapter: ChannelAdapter; streaming: StreamingHandler } | null> {
@@ -485,6 +530,7 @@ async function main(): Promise<void> {
 
   // Initialize channel adapters — one per bot identity
   for (const [platformName, platformConfig] of Object.entries(config.platforms)) {
+    if (platformName === 'http') continue;
     const bots = getPlatformBots(platformName);
     for (const [botName, botInfo] of bots) {
       const key = `${platformName}:${botName}`;
@@ -522,6 +568,75 @@ async function main(): Promise<void> {
     }
   }
 
+  const httpPlatform = config.platforms.http as HttpPlatformConfig | undefined;
+  if (httpPlatform?.enabled) {
+    const [
+      { HttpChannelAdapter },
+      { createHttpServer },
+      { registerAuthHook },
+      { buildHttpAuthConfig, buildHttpRouteBots, registerHttpAcpRoutes },
+    ] = await Promise.all([
+      import('./channels/http/index.js'),
+      import('./channels/http/server.js'),
+      import('./channels/http/auth.js'),
+      import('./channels/http/startup.js'),
+    ]);
+
+    const bind = httpPlatform.bind ?? '127.0.0.1';
+    const port = httpPlatform.port ?? 7878;
+    const publicBaseUrl = httpPlatform.publicBaseUrl ?? process.env.BRIDGE_PUBLIC_BASE_URL ?? `http://${bind}:${port}`;
+
+    const httpBots = buildHttpRouteBots(httpPlatform);
+    const authConfig = buildHttpAuthConfig(httpPlatform, getHttpApiKeySecret);
+    let httpAdapter: ChannelAdapter | null = null;
+    await createHttpServer({ bind, port }, async (server) => {
+      const createdHttpAdapter = new HttpChannelAdapter(server);
+      httpAdapter = createdHttpAdapter;
+      registerAuthHook(server, authConfig);
+      registerHttpAcpRoutes(server, {
+        adapter: createdHttpAdapter,
+        bots: httpBots,
+        publicBaseUrl,
+        bridgeVersion,
+        registerChannel: registerHttpChannel,
+        createSessionWithPermissions: async (channelId, _bot, onPermissionRequest) => {
+          const { sessionId } = await sessionManager.ensureSession(channelId, { onPermissionRequest });
+          return { sessionId };
+        },
+        getSession: (sessionId) => bridge.getSession(sessionId),
+        abortSession: (sessionId) => bridge.abortSession(sessionId),
+        subscribeToSessionEvents: (channelId, handler) => {
+          let subscribers = httpSessionEventSubscribers.get(channelId);
+          if (!subscribers) {
+            subscribers = new Set();
+            httpSessionEventSubscribers.set(channelId, subscribers);
+          }
+          subscribers.add(handler);
+          return () => {
+            subscribers?.delete(handler);
+            if (subscribers?.size === 0) httpSessionEventSubscribers.delete(channelId);
+          };
+        },
+        addPermissionRule,
+        checkPermission,
+      });
+    });
+
+    if (!httpAdapter) {
+      throw new Error('Failed to initialize HTTP channel adapter');
+    }
+
+    const httpStreaming = new StreamingHandler(httpAdapter, 0);
+    for (const [botName] of getPlatformBots('http')) {
+      const key = `http:${botName}`;
+      botAdapters.set(key, httpAdapter);
+      botStreamers.set(key, httpStreaming);
+      log.info(`Registered bot "${botName}" for http`);
+    }
+
+    log.info(`HTTP channel configured on ${bind}:${port}`);
+  }
+
   // Resolve non-UID Slack access entries at startup
   await resolveSlackAccessUsers(config);
 
@@ -552,45 +667,53 @@ async function main(): Promise<void> {
   });
 
   // Connect all bot adapters and wire up handlers
+  const connectedAdapters = new Set<ChannelAdapter>();
   for (const [key, adapter] of botAdapters) {
     const streaming = botStreamers.get(key)!;
     const colonIdx = key.indexOf(':');
     const platformName = key.slice(0, colonIdx);
     const botName = key.slice(colonIdx + 1);
 
-    adapter.onMessage((msg) => {
-      // If the channel is mid-turn, try steering (immediate mode) instead of serializing
-      if (isBusy(msg.channelId)) {
-        handleMidTurnMessage(msg, sessionManager, platformName, botName)
-          .catch(err => {
-            // Expected fallbacks — debug level
-            const expected = err?.message === 'slash-command-while-busy' || err?.message === 'attachments-while-busy';
-            if (expected) {
-              log.debug(`Mid-turn fallback (${err.message}), routing to normal handler`);
-            } else {
-              log.warn(`Mid-turn send failed, falling back to queued handler:`, err);
-            }
-            // Fall back to normal serialized path
-            const prev = channelLocks.get(msg.channelId) ?? Promise.resolve();
-            const next = prev.then(() =>
-              handleInboundMessage(msg, sessionManager, platformName, botName)
-                .catch(e => log.error(`Unhandled error in message handler:`, e))
-            );
-            channelLocks.set(msg.channelId, next);
-          });
-        return;
-      }
-      const prev = channelLocks.get(msg.channelId) ?? Promise.resolve();
-      const next = prev.then(() =>
-        handleInboundMessage(msg, sessionManager, platformName, botName)
-          .catch(err => log.error(`Unhandled error in message handler:`, err))
-      );
-      channelLocks.set(msg.channelId, next);
-    });
-    adapter.onReaction((reaction) => handleReaction(reaction, sessionManager, platformName, botName));
+    if (!connectedAdapters.has(adapter)) {
+      adapter.onMessage((msg) => {
+        // If the channel is mid-turn, try steering (immediate mode) instead of serializing
+        if (isBusy(msg.channelId)) {
+          handleMidTurnMessage(msg, sessionManager, platformName, botName)
+            .catch(err => {
+              // Expected fallbacks — debug level
+              const expected = err?.message === 'slash-command-while-busy' || err?.message === 'attachments-while-busy';
+              if (expected) {
+                log.debug(`Mid-turn fallback (${err.message}), routing to normal handler`);
+              } else {
+                log.warn(`Mid-turn send failed, falling back to queued handler:`, err);
+              }
+              // Fall back to normal serialized path
+              const prev = channelLocks.get(msg.channelId) ?? Promise.resolve();
+              const next = prev.then(() =>
+                handleInboundMessage(msg, sessionManager, platformName, botName)
+                  .catch(e => log.error(`Unhandled error in message handler:`, e))
+              );
+              channelLocks.set(msg.channelId, next);
+            });
+          return;
+        }
+        const prev = channelLocks.get(msg.channelId) ?? Promise.resolve();
+        const next = prev.then(() =>
+          handleInboundMessage(msg, sessionManager, platformName, botName)
+            .catch(err => log.error(`Unhandled error in message handler:`, err))
+        );
+        channelLocks.set(msg.channelId, next);
+      });
+      adapter.onReaction((reaction) => handleReaction(reaction, sessionManager, platformName, botName));
 
-    await adapter.connect();
-    log.info(`${key} connected`);
+      await adapter.connect();
+      connectedAdapters.add(adapter);
+      if (platformName === 'http') {
+        log.info('HTTP channel started');
+      } else {
+        log.info(`${key} connected`);
+      }
+    }
 
     // Discover existing DM channels and auto-register any that aren't configured
     if (typeof adapter.discoverDMChannels === 'function') {
@@ -690,10 +813,10 @@ async function main(): Promise<void> {
     configWatcher.stop();
     workspaceWatcher.stop();
     await sessionManager.shutdown();
-    for (const [, adapter] of botAdapters) {
+    for (const adapter of new Set(botAdapters.values())) {
       await adapter.disconnect();
     }
-    for (const [, streaming] of botStreamers) {
+    for (const streaming of new Set(botStreamers.values())) {
       await streaming.cleanup();
     }
     await bridge.stop();
@@ -1530,7 +1653,7 @@ async function handleInboundMessage(
         }
 
         lines.push('**Copilot Bridge Tools**');
-        for (const t of BRIDGE_CUSTOM_TOOLS) lines.push(`• \`${t}\``);
+        for (const t of await sessionManager.listBridgeToolNames(msg.channelId)) lines.push(`• \`${t}\``);
 
         if (skills.length === 0 && mcpInfo.length === 0) {
           lines.push('', '_No skills or MCP servers configured. Add skills to `~/.copilot/skills/` or MCP servers to `~/.copilot/mcp-config.json`._');
@@ -2018,6 +2141,8 @@ async function handleSessionEvent(
   }
   lastSessionIds.set(channelId, sessionId);
 
+  emitHttpSessionEvent(sessionId, channelId, event);
+
   if (event.type === 'session.error' || event.type?.includes('error')) {
     log.error(`SDK error event: ${JSON.stringify(event).slice(0, 1000)}`);
   }
@@ -2077,11 +2202,15 @@ async function handleSessionEvent(
     log.debug(`SDK event: ${event.type}`);
   }
 
+  const channelConfig = await getChannelConfig(channelId);
+  if (channelConfig.platform === 'http') {
+    return;
+  }
+
   const resolved = await getAdapterForChannel(channelId);
   if (!resolved) return;
   const { adapter, streaming } = resolved;
 
-  const channelConfig = await getChannelConfig(channelId);
   let prefs: Awaited<ReturnType<typeof getChannelPrefs>> = null;
   try {
     prefs = await getChannelPrefs(channelId);
@@ -2574,9 +2703,14 @@ async function postRestartNotices(): Promise<void> {
   }
 }
 
-// Start the bridge
-main().catch(async (err) => {
-  log.error('Fatal error:', err);
-  try { await closeDb(); } catch (err) { log.warn('Failed to close database during fatal error handler:', err); }
-  process.exit(1);
-});
+const isEntrypoint = process.argv[1]
+  ? pathToFileURL(process.argv[1]).href === import.meta.url
+  : false;
+
+if (isEntrypoint) {
+  main().catch(async (err) => {
+    log.error('Fatal error:', err);
+    try { await closeDb(); } catch (closeErr) { log.warn('Failed to close database during fatal error handler:', closeErr); }
+    process.exit(1);
+  });
+}

@@ -5,6 +5,8 @@ export interface BotConfig {
   agent?: string | null;     // default agent for this bot identity
   admin?: boolean;           // admin bots can manage all workspaces
   access?: AccessConfig;     // user-level access control
+  workingDirectory?: string; // optional explicit workspace path; takes precedence over default
+  model?: string;            // optional default model id for sessions under this bot identity
 }
 
 // User-level access control
@@ -19,6 +21,22 @@ export interface PlatformConfig {
   botToken?: string;                // single-bot shorthand (backward compatible)
   bots?: Record<string, BotConfig>; // multi-bot: name → config
   access?: AccessConfig;            // platform-level access control (takes precedence over bot-level)
+}
+
+// HTTP platform: per-API-key auth config
+export interface HttpApiKeyConfig {
+  secret: string;                    // "env:VAR_NAME" -- resolved at startup
+  allowedAgents: string[];           // ["*"] or ["bob", "lal"]
+  allowedOps: string[];              // ["agent:read", "agent:execute", ...]
+}
+
+// HTTP channel adapter platform config (lives under platforms.http in config.json)
+export interface HttpPlatformConfig extends PlatformConfig {
+  enabled: boolean;
+  bind?: string;                     // default "127.0.0.1"
+  port?: number;                     // default 7878
+  publicBaseUrl?: string;
+  apiKeys: Record<string, HttpApiKeyConfig>;
 }
 
 // Channel configuration
