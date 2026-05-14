@@ -19,6 +19,23 @@ export function mapSdkEventToA2A(event: SessionEvent, ctx: MapContext): A2AStrea
       return artifactUpdate(ctx, readString(data, 'deltaContent'), true, false);
     case 'assistant.message':
       return artifactUpdate(ctx, readString(data, 'content'), false, true);
+    case 'run.awaiting':
+      return {
+        taskId: ctx.taskId,
+        contextId: ctx.contextId,
+        kind: 'status-update',
+        final: false,
+        status: {
+          state: 'input-required',
+          message: {
+            role: 'agent',
+            messageId: `${ctx.taskId}-permreq-${Date.now()}`,
+            taskId: ctx.taskId,
+            contextId: ctx.contextId,
+            parts: [{ kind: 'text', text: `Permission required: ${readString(data, 'tool', 'toolName', 'name') || 'unknown'}` }],
+          },
+        },
+      } satisfies A2ATaskStatusUpdateEvent;
     case 'bridge.permission_request':
       return {
         taskId: ctx.taskId,

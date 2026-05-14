@@ -62,6 +62,16 @@ describe('mapSdkEventToA2A', () => {
     expectContext(event);
   });
 
+  it('maps run.awaiting to a non-final input-required status update', () => {
+    const event = mapSdkEventToA2A(sdkEvent('run.awaiting', { run_id: 'task-1', tool: 'shell', detail: '...' }), ctx) as A2ATaskStatusUpdateEvent;
+
+    expect(event.kind).toBe('status-update');
+    expect(event.final).toBe(false);
+    expect(event.status.state).toBe('input-required');
+    expect(event.status.message?.parts[0]?.text).toContain('shell');
+    expectContext(event);
+  });
+
   it('maps session.idle to a final completed status update', () => {
     const event = mapSdkEventToA2A(sdkEvent('session.idle'), ctx) as A2ATaskStatusUpdateEvent;
 
