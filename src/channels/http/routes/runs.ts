@@ -74,7 +74,20 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
     const channelId = session_id ?? randomUUID();
     const existingRun = deps.runRegistry.getNonTerminalActiveRun(channelId);
     if (existingRun) {
-      return reply.status(409).send({ error: 'Run already in progress for this session_id' });
+      if (existingRun.status === 'awaiting') {
+        const error = 'approval abandoned: new run started';
+        deps.pendingPermissionStore.resolve(existingRun.runId, 'deny');
+        deps.runRegistry.updateStatus(existingRun.runId, 'failed', {
+          finishedAt: new Date().toISOString(),
+          error,
+        });
+        deps.runRegistry.getEmitter(existingRun.runId)?.({
+          type: 'run.failed',
+          data: { run_id: existingRun.runId, error },
+        });
+      } else {
+        return reply.status(409).send({ error: 'Run already in progress for this session_id' });
+      }
     }
 
     // Empty ref - filled in after session creation with the CLI-assigned sessionId
