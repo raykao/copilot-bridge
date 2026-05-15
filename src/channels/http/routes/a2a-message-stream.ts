@@ -95,11 +95,13 @@ export function attachA2AStream(
 
   let closed = false;
   let unsubscribe: (() => void) | undefined;
+  let terminalRunStatus: 'completed' | 'failed' = 'completed';
   const close = (): void => {
     if (closed) return;
     closed = true;
     unsubscribe?.();
     deps.runRegistry.setEmitter(ctx.taskId, () => undefined);
+    deps.runRegistry.updateStatus(ctx.taskId, terminalRunStatus, { finishedAt: new Date().toISOString() });
     reply.raw.end();
   };
 
@@ -108,7 +110,11 @@ export function attachA2AStream(
     const a2aEvent = mapSdkEventToA2A(sdkEvent as SessionEvent, ctx);
     if (!a2aEvent) return;
     writeA2AEvent(reply.raw, eventNameFor(a2aEvent), a2aEvent);
-    if (isTerminalA2AEvent(a2aEvent)) close();
+    if (isTerminalA2AEvent(a2aEvent)) {
+      const sdkType = (sdkEvent as { type?: string }).type;
+      terminalRunStatus = sdkType === 'session.error' ? 'failed' : 'completed';
+      close();
+    }
   });
 
   unsubscribe = deps.subscribeToSessionEvents(ctx.contextId, (_sessionId, channelId, event) => {
@@ -126,7 +132,10 @@ export function attachA2AStream(
     if (a2aEvent) {
       writeA2AEvent(reply.raw, eventNameFor(a2aEvent), a2aEvent);
     }
-    if (terminal) close();
+    if (terminal) {
+      terminalRunStatus = (event as { type?: string }).type === 'session.error' ? 'failed' : 'completed';
+      close();
+    }
   });
 
   request.raw.on('close', () => {
