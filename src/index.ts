@@ -1,4 +1,4 @@
-import { loadConfig, getConfig, getHttpApiKeySecret, isConfiguredChannel, registerDynamicChannel, markChannelAsDM, getChannelConfig, getPlatformBots, getPlatformAccess, getChannelBotName, isBotAdmin, getHardcodedRules, getConfigRules, reloadConfig, ConfigWatcher } from './config.js';
+import { loadConfig, getConfig, getHttpApiKeySecret, isConfiguredChannel, registerDynamicChannel, markChannelAsDM, getChannelConfig, getPlatformBots, getPlatformAccess, getChannelBotName, isBotAdmin, getHardcodedRules, getConfigRules, reloadConfig, ConfigWatcher, getAcpPlatformConfig } from './config.js';
 import { CopilotBridge } from './core/bridge.js';
 import { SessionManager, parseEnvFile } from './core/session-manager.js';
 import { handleCommand, parseCommand } from './core/command-handler.js';
@@ -635,6 +635,17 @@ async function main(): Promise<void> {
     }
 
     log.info(`HTTP channel configured on ${bind}:${port}`);
+  }
+
+  // Boot ACP WebSocket server if platforms.acp is configured
+  const acpConfig = getAcpPlatformConfig();
+  if (acpConfig) {
+    const { startAcpServer } = await import('./channels/acp/index.js');
+    const acpServer = await startAcpServer(acpConfig, bridge);
+    log.info(`ACP server ready on ws://${acpConfig.bind ?? '127.0.0.1'}:${acpConfig.port ?? 3030}`);
+    process.on('SIGTERM', () => {
+      acpServer.close().catch((err) => log.error('ACP server close error', { err }));
+    });
   }
 
   // Resolve non-UID Slack access entries at startup
