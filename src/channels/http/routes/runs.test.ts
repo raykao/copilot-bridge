@@ -99,7 +99,10 @@ describe('registerRunRoutes', () => {
         recordCancellationSuppression,
         shouldSuppressCancellationTerminal,
       } as Partial<RunRegistry> as RunRegistry,
-      permissionStore: { shouldApprove: vi.fn() } as unknown as PermissionStore,
+      permissionStore: {
+        shouldApprove: vi.fn(),
+        shouldDeny: vi.fn().mockReturnValue(false),
+      } as unknown as PermissionStore,
       pendingPermissionStore: { park: vi.fn(), resolve: vi.fn() } as unknown as PendingPermissionStore,
       checkPermission,
       createSessionWithPermissions,
@@ -396,7 +399,7 @@ describe('registerRunRoutes', () => {
     await expect(onPermissionRequest(
       { kind: 'shell', toolCallId: 'tool-call-1' },
       { sessionId: 'mock-session-id' },
-    )).resolves.toEqual({ kind: 'denied-by-rules', rules: [] });
+    )).resolves.toEqual({ kind: 'reject' });
 
     expect(updateStatus).toHaveBeenCalledWith(runId, 'awaiting');
   });

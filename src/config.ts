@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AppConfig, ChannelConfig, BotConfig, InterAgentConfig, AccessConfig, BridgeProviderConfig, HttpPlatformConfig } from './types.js';
+import type { AppConfig, ChannelConfig, BotConfig, InterAgentConfig, AccessConfig, BridgeProviderConfig, HttpPlatformConfig, AcpPlatformConfig } from './types.js';
 import type { SDKProviderConfig } from './core/bridge.js';
 import { getDynamicChannel } from './state/store.js';
 import { createLogger } from './logger.js';
@@ -125,6 +125,24 @@ function validateAndNormalize(raw: any): AppConfig {
       if (!p.bots) throw new Error('Platform "slack" requires "bots" with bot tokens');
       validateAccessConfig(name, '(platform)', p.access);
       validatePlatformBots(name, p.bots, { requireAppToken: true });
+    } else if (name === 'acp') {
+      if (p.bind !== undefined && typeof p.bind !== 'string') {
+        throw new Error('Platform "acp" bind must be a string');
+      }
+      if (p.port !== undefined && (typeof p.port !== 'number' || !Number.isInteger(p.port) || p.port <= 0)) {
+        throw new Error('Platform "acp" port must be a positive integer');
+      }
+      if (p.bots !== undefined) {
+        if (p.bots === null || typeof p.bots !== 'object' || Array.isArray(p.bots)) {
+          throw new Error('Platform "acp" "bots" must be an object');
+        }
+        for (const [botName, bot] of Object.entries(p.bots)) {
+          if (!bot || typeof bot !== 'object' || Array.isArray(bot)) {
+            throw new Error(`Platform "acp" bot "${botName}" must be an object`);
+          }
+          validateAccessConfig(name, botName, (bot as any).access);
+        }
+      }
     } else {
       if (!p.url) throw new Error(`Platform "${name}" missing "url"`);
       if (!p.botToken && !p.bots) throw new Error(`Platform "${name}" needs either "botToken" or "bots"`);
@@ -464,6 +482,20 @@ export function getHttpApiKeySecret(keyName: string): string | undefined {
 /** Get all HTTP API key names that were successfully resolved at startup. */
 export function getHttpApiKeyNames(): string[] {
   return [..._resolvedHttpApiKeys.keys()];
+}
+
+/**
+ * Get the ACP platform config, with defaults applied.
+ * Returns undefined if platforms.acp is not configured.
+ */
+export function getAcpPlatformConfig(): AcpPlatformConfig | undefined {
+  const raw = getConfig().platforms['acp'] as AcpPlatformConfig | undefined;
+  if (!raw) return undefined;
+  return {
+    port: raw.port ?? 3030,
+    bind: raw.bind ?? '127.0.0.1',
+    bots: raw.bots ?? {},
+  };
 }
 
 /** Result of a config reload attempt. */

@@ -5,7 +5,7 @@ import type { PermissionStore } from '../permission-store.js';
 import type { RunRegistry } from '../run-registry.js';
 
 type ResumeBody = {
-  decision: 'allow-once' | 'allow-session' | 'allow-all-session' | 'allow-all' | 'deny';
+  decision: 'allow-once' | 'allow-session' | 'allow-all-session' | 'allow-all' | 'deny' | 'deny-session' | 'deny-all';
 };
 
 type ResumeDecision = ResumeBody['decision'];
@@ -16,6 +16,8 @@ const VALID_DECISIONS = new Set<ResumeDecision>([
   'allow-all-session',
   'allow-all',
   'deny',
+  'deny-session',
+  'deny-all',
 ]);
 
 export interface RunResumeRouteDeps {
@@ -71,6 +73,12 @@ export function registerRunResumeRoutes(app: FastifyInstance, deps: RunResumeRou
         await deps.addPermissionRule(entry.channelId, pending.toolKind, '*', 'allow');
         break;
       case 'deny':
+        break;
+      case 'deny-session':
+        deps.permissionStore.setDenyTool(entry.runId, pending.toolKind);
+        break;
+      case 'deny-all':
+        await deps.addPermissionRule(entry.channelId, pending.toolKind, '*', 'deny');
         break;
     }
 

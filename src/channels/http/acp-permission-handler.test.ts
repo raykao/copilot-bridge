@@ -13,7 +13,10 @@ describe('createAcpPermissionHandler', () => {
   });
 
   it('returns approved immediately when permissionStore.shouldApprove returns true', async () => {
-    const permissionStore = { shouldApprove: vi.fn().mockReturnValue(true) } as unknown as PermissionStore;
+    const permissionStore = {
+      shouldApprove: vi.fn().mockReturnValue(true),
+      shouldDeny: vi.fn().mockReturnValue(false),
+    } as unknown as PermissionStore;
     const pendingPermissionStore = new PendingPermissionStore();
     const getEmitter = vi.fn();
     const checkPermission = vi.fn().mockResolvedValue(null);
@@ -28,7 +31,7 @@ describe('createAcpPermissionHandler', () => {
       markAwaiting,
     );
 
-    await expect(handler(request, invocation)).resolves.toEqual({ kind: 'approved' });
+    await expect(handler(request, invocation)).resolves.toEqual({ kind: 'approve-once' });
     expect(permissionStore.shouldApprove).toHaveBeenCalledWith('run-1', 'shell');
     expect(checkPermission).not.toHaveBeenCalled();
     expect(getEmitter).not.toHaveBeenCalled();
@@ -57,7 +60,7 @@ describe('createAcpPermissionHandler', () => {
     expect(checkPermission).toHaveBeenCalledWith('channel-1', 'shell', '*');
     expect(pendingPermissionStore.has('run-2')).toBe(true);
     pendingPermissionStore.resolve('run-2', 'deny');
-    await expect(result).resolves.toEqual({ kind: 'denied-by-rules', rules: [] });
+    await expect(result).resolves.toEqual({ kind: 'reject' });
   });
 
   it('honors persistent allow-all permission for a later ACP run on the same client session', async () => {
@@ -76,7 +79,7 @@ describe('createAcpPermissionHandler', () => {
       markAwaiting,
     );
 
-    await expect(handler(request, invocation)).resolves.toEqual({ kind: 'approved' });
+    await expect(handler(request, invocation)).resolves.toEqual({ kind: 'approve-once' });
     expect(checkPermission).toHaveBeenCalledWith('client-session-id', 'shell', '*');
     expect(getEmitter).not.toHaveBeenCalled();
     expect(markAwaiting).not.toHaveBeenCalled();
@@ -84,7 +87,10 @@ describe('createAcpPermissionHandler', () => {
   });
 
   it('marks the run awaiting, calls getEmitter, and fires run.awaiting event when not auto-approved', async () => {
-    const permissionStore = { shouldApprove: vi.fn().mockReturnValue(false) } as unknown as PermissionStore;
+    const permissionStore = {
+      shouldApprove: vi.fn().mockReturnValue(false),
+      shouldDeny: vi.fn().mockReturnValue(false),
+    } as unknown as PermissionStore;
     const pendingPermissionStore = new PendingPermissionStore();
     const emitter = vi.fn();
     const getEmitter = vi.fn().mockReturnValue(emitter);
@@ -111,7 +117,7 @@ describe('createAcpPermissionHandler', () => {
     expect(pendingPermissionStore.has('run-1')).toBe(true);
 
     pendingPermissionStore.resolve('run-1', 'allow-once');
-    await expect(result).resolves.toEqual({ kind: 'approved' });
+    await expect(result).resolves.toEqual({ kind: 'approve-once' });
   });
 
   it('resolving pending with allow-once returns approved', async () => {
@@ -121,7 +127,7 @@ describe('createAcpPermissionHandler', () => {
 
     pendingPermissionStore.resolve('run-1', 'allow-once');
 
-    await expect(result).resolves.toEqual({ kind: 'approved' });
+    await expect(result).resolves.toEqual({ kind: 'approve-once' });
   });
 
   it('resolving pending with deny returns denied-by-rules rules []', async () => {
@@ -131,7 +137,7 @@ describe('createAcpPermissionHandler', () => {
 
     pendingPermissionStore.resolve('run-1', 'deny');
 
-    await expect(result).resolves.toEqual({ kind: 'denied-by-rules', rules: [] });
+    await expect(result).resolves.toEqual({ kind: 'reject' });
   });
 
   it('resolving pending with allow-all-session returns approved', async () => {
@@ -141,7 +147,7 @@ describe('createAcpPermissionHandler', () => {
 
     pendingPermissionStore.resolve('run-1', 'allow-all-session');
 
-    await expect(result).resolves.toEqual({ kind: 'approved' });
+    await expect(result).resolves.toEqual({ kind: 'approve-once' });
   });
 
   it('timeout with fake timers advancing 300001ms returns denied-by-rules rules []', async () => {
@@ -153,13 +159,16 @@ describe('createAcpPermissionHandler', () => {
     expect(pendingPermissionStore.has('run-1')).toBe(true);
     await vi.advanceTimersByTimeAsync(300001);
 
-    await expect(result).resolves.toEqual({ kind: 'denied-by-rules', rules: [] });
+    await expect(result).resolves.toEqual({ kind: 'reject' });
     expect(pendingPermissionStore.has('run-1')).toBe(false);
   });
 });
 
 function createPendingHandler() {
-  const permissionStore = { shouldApprove: vi.fn().mockReturnValue(false) } as unknown as PermissionStore;
+  const permissionStore = {
+    shouldApprove: vi.fn().mockReturnValue(false),
+    shouldDeny: vi.fn().mockReturnValue(false),
+  } as unknown as PermissionStore;
   const pendingPermissionStore = new PendingPermissionStore();
   const handler = createAcpPermissionHandler(
     { current: 'run-1' },
