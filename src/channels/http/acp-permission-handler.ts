@@ -5,8 +5,8 @@ import type { PermissionStore } from './permission-store.js';
 
 const log = createLogger('acp-permission-handler');
 const PERMISSION_TIMEOUT_MS = 300000;
-const APPROVED = { kind: 'approved' } as unknown as PermissionRequestResult;
-const DENIED = { kind: 'denied-by-rules', rules: [] } as unknown as PermissionRequestResult;
+const APPROVED = { kind: 'approve-once' } as unknown as PermissionRequestResult;
+const DENIED = { kind: 'reject' } as unknown as PermissionRequestResult;
 
 export function createAcpPermissionHandler(
   runIdRef: { current: string },
