@@ -33,6 +33,10 @@ const activeStreams = new Map<string, string>(); // channelId → streamKey
 const noReplyChannels = new Set<string>();
 // Tracks whether content was emitted after no_reply (second turn succeeded)
 const noReplyHadContent = new Set<string>();
+// Tracks channels where message_delta events were received this turn.
+// Used to suppress the redundant assistant.message final event when deltas
+// already rendered the full content, preventing double-display in clients.
+const deltaReceivedChannels = new Set<string>();
 
 // Preserve thread context across turn_end stream finalization so auto-started
 // streams stay in the same thread.
@@ -2454,6 +2458,12 @@ async function handleSessionEvent(
       // In verbose mode with an active "Working..." stream that hasn't received
       // content yet, update it in place instead of deleting and recreating.
       // This avoids visible message deletion/churn in the chat.
+      // If deltas were already streamed for this turn, the full content has been
+      // rendered incrementally. Skip assistant.message to prevent double-display.
+      if (event.type === 'assistant.message' && deltaReceivedChannels.has(channelId)) {
+        break;
+      }
+
       if (verbose && streamKey) {
         const streamContent = streaming.getStreamContent(streamKey);
         if (streamContent !== undefined && streamContent === '') {
@@ -2461,6 +2471,7 @@ async function handleSessionEvent(
             streaming.replaceContent(streamKey, formatted.content);
           } else if (formatted.content) {
             streaming.appendDelta(streamKey, formatted.content);
+            deltaReceivedChannels.add(channelId);
           }
           adapter.setTyping(channelId).catch((err: any) => { log.debug("setTyping failed:", err); });
           break;
@@ -2483,6 +2494,7 @@ async function handleSessionEvent(
           streaming.replaceContent(streamKey, formatted.content);
         } else if (formatted.content) {
           streaming.appendDelta(streamKey, formatted.content);
+          deltaReceivedChannels.add(channelId);
         }
       }
       adapter.setTyping(channelId).catch((err: any) => { log.debug("setTyping failed:", err); });
@@ -2592,6 +2604,7 @@ async function handleSessionEvent(
           await streaming.finalizeStream(streamKey);
           activeStreams.delete(channelId);
         }
+        deltaReceivedChannels.delete(channelId);
       }
       // Finalize stream when the session goes idle (all turns complete).
        if (event.type === 'session.idle') {
@@ -2600,6 +2613,7 @@ async function handleSessionEvent(
         await finalizeActivityFeed(channelId, adapter);
         initialStreamPosted.delete(channelId);
         channelThreadRoots.delete(channelId);
+        deltaReceivedChannels.delete(channelId);
 
          // If no_reply tool was called, handle stream based on whether
         // the SDK's second turn produced any content.
