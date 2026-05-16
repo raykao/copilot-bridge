@@ -22,6 +22,9 @@ export function createAcpPermissionHandler(
     if (permissionStore.shouldApprove(runId, request.kind)) {
       return APPROVED;
     }
+    if (permissionStore.shouldDeny(runId, request.kind)) {
+      return DENIED;
+    }
     try {
       const persistentDecision = await checkPermission(channelId, request.kind, '*');
       if (persistentDecision === 'allow') return APPROVED;

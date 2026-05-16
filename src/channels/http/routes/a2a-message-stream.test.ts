@@ -92,7 +92,10 @@ describe('registerA2AMessageStreamRoute', () => {
       adapter: { dispatchInboundMessage } as Partial<A2AMessageStreamRouteDeps['adapter']> as A2AMessageStreamRouteDeps['adapter'],
       bots: testBots,
       runRegistry,
-      permissionStore: { shouldApprove: vi.fn() } as unknown as PermissionStore,
+      permissionStore: {
+        shouldApprove: vi.fn(),
+        shouldDeny: vi.fn().mockReturnValue(false),
+      } as unknown as PermissionStore,
       pendingPermissionStore: { park: vi.fn() } as unknown as PendingPermissionStore,
       checkPermission,
       createSessionWithPermissions,

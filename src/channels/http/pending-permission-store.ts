@@ -3,7 +3,9 @@ export type AcpPermissionDecision =
   | 'allow-session'
   | 'allow-all-session'
   | 'allow-all'
-  | 'deny';
+  | 'deny'
+  | 'deny-session'
+  | 'deny-all';
 
 export interface PendingPermissionRequest {
   runId: string;

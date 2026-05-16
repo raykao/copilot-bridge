@@ -85,7 +85,10 @@ describe('registerA2AMessageSendRoute', () => {
         getEmitter,
         updateStatus,
       } as Partial<RunRegistry> as RunRegistry,
-      permissionStore: { shouldApprove: vi.fn() } as unknown as PermissionStore,
+      permissionStore: {
+        shouldApprove: vi.fn(),
+        shouldDeny: vi.fn().mockReturnValue(false),
+      } as unknown as PermissionStore,
       pendingPermissionStore: { park: vi.fn() } as unknown as PendingPermissionStore,
       checkPermission,
       createSessionWithPermissions,
