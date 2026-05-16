@@ -92,7 +92,20 @@ export async function validateAndStartTask(
 
   const existingRun = deps.runRegistry.getNonTerminalActiveRun(channelId);
   if (existingRun) {
-    return { ok: false, status: 409, error: 'Task already in progress for this contextId' };
+    if (existingRun.status === 'awaiting') {
+      const error = 'approval abandoned: new run started';
+      deps.pendingPermissionStore.resolve(existingRun.runId, 'deny');
+      deps.runRegistry.updateStatus(existingRun.runId, 'failed', {
+        finishedAt: new Date().toISOString(),
+        error,
+      });
+      deps.runRegistry.getEmitter(existingRun.runId)?.({
+        type: 'run.failed',
+        data: { run_id: existingRun.runId, error },
+      });
+    } else {
+      return { ok: false, status: 409, error: 'Task already in progress for this contextId' };
+    }
   }
 
   const runIdRef = { current: '' };
