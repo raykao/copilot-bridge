@@ -81,7 +81,7 @@ describe('AcpConnectionHandler', () => {
     ]);
   });
 
-  it('initialize echoes protocolVersion with agentCapabilities {}, authMethods []', async () => {
+  it('initialize echoes protocolVersion with capabilities and authMethods []', async () => {
     const sent: SentMessage[] = [];
     const { bridge } = bridgeWithSession(fakeSession());
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
@@ -97,7 +97,12 @@ describe('AcpConnectionHandler', () => {
       {
         jsonrpc: '2.0',
         id: 'init',
-        result: { protocolVersion: '1', agentCapabilities: {}, authMethods: [] },
+        result: {
+          protocolVersion: '1',
+          agentCapabilities: {},
+          authMethods: [],
+          serverCapabilities: { session: { resume: true } },
+        },
       },
     ]);
   });

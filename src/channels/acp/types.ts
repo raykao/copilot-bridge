@@ -37,6 +37,7 @@ export interface InitializeResult {
   protocolVersion: string;
   agentCapabilities: Record<string, unknown>;
   authMethods: unknown[];
+  serverCapabilities?: { session?: { resume?: boolean } };
 }
 
 export interface SessionNewParams {

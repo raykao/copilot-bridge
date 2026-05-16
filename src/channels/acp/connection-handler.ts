@@ -91,6 +91,9 @@ export class AcpConnectionHandler {
       case 'session/cancel':
         await this.handleSessionCancel(request);
         break;
+      case 'session/resume':
+        await this.handleSessionResume(request);
+        break;
       case 'session/close':
         await this.handleSessionClose(request);
         break;
@@ -129,6 +132,7 @@ export class AcpConnectionHandler {
       protocolVersion: params.protocolVersion,
       agentCapabilities: {},
       authMethods: [],
+      serverCapabilities: { session: { resume: true } },
     };
     this.sendResponse(msg.id, result);
   }
@@ -164,6 +168,16 @@ export class AcpConnectionHandler {
 
     const result: SessionNewResult = { sessionId: session.sessionId };
     this.sendResponse(msg.id, result);
+  }
+
+  private async handleSessionResume(msg: JsonRpcRequest): Promise<void> {
+    const params = (msg.params ?? {}) as { sessionId: string };
+    const entry = this.sessions.get(params.sessionId);
+    if (!entry) {
+      this.sendError(msg.id, -32002, 'Session not found');
+      return;
+    }
+    this.sendResponse(msg.id, { sessionId: params.sessionId });
   }
 
   private makePermissionHandler(): (
