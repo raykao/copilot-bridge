@@ -24,6 +24,7 @@ import type {
   SessionEvent,
 } from '@github/copilot-sdk';
 import { createLogger } from '../../logger.js';
+import { buildCustomAgents } from '../../core/session-manager.js';
 
 const log = createLogger('acp-connection');
 
@@ -141,7 +142,15 @@ export class AcpConnectionHandler {
     const params = (msg.params ?? {}) as SessionNewParams;
     const workingDirectory = this.botCfg.workingDirectory ?? process.cwd();
     const model = params.model ?? this.botCfg.model;
-    const agentName = this.botCfg.agent;
+    let agentName: string | undefined = this.botCfg.agent;
+
+    if (agentName) {
+      const customAgents = buildCustomAgents(workingDirectory);
+      if (!customAgents.some(a => a.name === agentName)) {
+        log.warn(`Agent "${agentName}" has no definition in ${workingDirectory}, falling back to AGENTS.md`);
+        agentName = undefined;
+      }
+    }
 
     let session: CopilotSession;
     try {

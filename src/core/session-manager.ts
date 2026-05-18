@@ -416,7 +416,7 @@ function resolveSkillRoots(roots: string[]): string[] {
  * Convert discovered agent definitions to SDK CustomAgentConfig[].
  * This lets the SDK resolve plugin/user agents by name (they aren't on the SDK's search path).
  */
-function buildCustomAgents(workingDirectory: string): { name: string; prompt: string; description?: string }[] {
+export function buildCustomAgents(workingDirectory: string): { name: string; prompt: string; description?: string }[] {
   const definitions = discoverAgentDefinitions(workingDirectory);
   if (definitions.size === 0) return [];
   const agents: { name: string; prompt: string; description?: string }[] = [];
