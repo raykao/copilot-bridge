@@ -1875,6 +1875,16 @@ export class SessionManager {
 
     const customAgents = buildCustomAgents(workingDirectory);
 
+    // If a custom agent is requested but no matching definition file exists in the
+    // workspace, fall back to AGENTS.md (via enableConfigDiscovery) instead of letting
+    // the SDK throw "Custom agent '<name>' not found". This handles the common case
+    // where a bot config sets `agent: "<bot-name>"` but the workspace only has
+    // AGENTS.md (no <name>.agent.md). See: bridge-bug-http-bot-configs-in-config-json
+    if (prefs.agent && !customAgents.some(a => a.name === prefs.agent)) {
+      log.warn(`Agent "${prefs.agent}" has no definition in ${workingDirectory}, falling back to AGENTS.md`);
+      prefs.agent = null;
+    }
+
     const excludedTools = this.getExcludedTools();
 
     const createWithModel = async (model: string) => {
@@ -2031,6 +2041,13 @@ export class SessionManager {
     }
 
     const customAgents = buildCustomAgents(workingDirectory);
+
+    // Same fallback as createNewSession: if requested agent has no definition file,
+    // fall back to AGENTS.md instead of letting the SDK throw.
+    if (prefs.agent && !customAgents.some(a => a.name === prefs.agent)) {
+      log.warn(`Agent "${prefs.agent}" has no definition in ${workingDirectory}, falling back to AGENTS.md`);
+      prefs.agent = null;
+    }
 
     // Resolve BYOK provider for resume
     const providerName = prefs.provider ?? null;
