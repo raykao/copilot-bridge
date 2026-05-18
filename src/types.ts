@@ -23,21 +23,6 @@ export interface PlatformConfig {
   access?: AccessConfig;            // platform-level access control (takes precedence over bot-level)
 }
 
-// HTTP platform: per-API-key auth config
-export interface HttpApiKeyConfig {
-  secret: string;                    // "env:VAR_NAME" -- resolved at startup
-  allowedAgents: string[];           // ["*"] or ["bob", "lal"]
-  allowedOps: string[];              // ["agent:read", "agent:execute", ...]
-}
-
-// HTTP channel adapter platform config (lives under platforms.http in config.json)
-export interface HttpPlatformConfig extends PlatformConfig {
-  enabled: boolean;
-  bind?: string;                     // default "127.0.0.1"
-  port?: number;                     // default 7878
-  publicBaseUrl?: string;
-  apiKeys: Record<string, HttpApiKeyConfig>;
-}
 
 // ACP platform: per-bot config (lives under platforms.acp.bots in config.json)
 export interface AcpBotConfig {
