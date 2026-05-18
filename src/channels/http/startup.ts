@@ -28,6 +28,7 @@ export interface HttpAcpRouteDeps {
   bots: Record<string, HttpRouteBotConfig>;
   publicBaseUrl: string;
   bridgeVersion: string;
+  acpWsUrl?: string;
   registerChannel: (channelId: string, bot: string) => Promise<void>;
   createSessionWithPermissions: (
     channelId: string,
@@ -50,6 +51,28 @@ export interface HttpAcpRouteStores {
   pendingPermissionStore: PendingPermissionStore;
   pushNotificationStore: PushNotificationStore;
   pushDelivery: PushDelivery;
+}
+
+/**
+ * Converts the HTTP public base URL to an ACP WebSocket base URL by swapping
+ * the protocol (http->ws, https->wss) and replacing the port with acpPort.
+ * Returns undefined if publicBaseUrl is not a valid URL.
+ *
+ * Examples:
+ *   buildAcpWsUrl('http://localhost:7878', 3030) => 'ws://localhost:3030'
+ *   buildAcpWsUrl('https://bridge.example.com', 3030) => 'wss://bridge.example.com:3030'
+ */
+export function buildAcpWsUrl(publicBaseUrl: string, acpPort: number): string | undefined {
+  try {
+    const u = new URL(publicBaseUrl);
+    u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    u.port = String(acpPort);
+    u.pathname = '';
+    u.search = '';
+    return u.toString().replace(/\/+$/, '');
+  } catch {
+    return undefined;
+  }
 }
 
 export function buildHttpAuthConfig(
@@ -102,11 +125,13 @@ export function registerHttpAcpRoutes(app: FastifyInstance, deps: HttpAcpRouteDe
     bots: deps.bots,
     publicBaseUrl: deps.publicBaseUrl,
     bridgeVersion: deps.bridgeVersion,
+    acpWsUrl: deps.acpWsUrl,
   });
   registerAgentCardCatalogRoute(app, {
     bots: deps.bots,
     publicBaseUrl: deps.publicBaseUrl,
     bridgeVersion: deps.bridgeVersion,
+    acpWsUrl: deps.acpWsUrl,
   });
   registerRunRoutes(app, {
     adapter: deps.adapter,

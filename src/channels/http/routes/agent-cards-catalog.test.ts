@@ -132,3 +132,37 @@ describe('registerAgentCardCatalogRoute', () => {
     });
   });
 });
+
+describe('buildAgentCard with acpWsUrl', () => {
+  it('includes ACP+WS interface when acpWsUrl is provided', () => {
+    const card = buildAgentCard('bob', { agent: 'bob', token: 'tok' }, {
+      publicBaseUrl: 'http://localhost:7878',
+      bridgeVersion: '1.0.0',
+      acpWsUrl: 'ws://localhost:3030',
+    });
+    expect(card.supportedInterfaces).toHaveLength(2);
+    expect(card.supportedInterfaces[1]).toEqual({
+      url: 'ws://localhost:3030/bob',
+      protocolBinding: 'ACP+WS',
+      protocolVersion: '1',
+    });
+  });
+
+  it('omits ACP+WS interface when acpWsUrl is not provided', () => {
+    const card = buildAgentCard('bob', { agent: 'bob', token: 'tok' }, {
+      publicBaseUrl: 'http://localhost:7878',
+      bridgeVersion: '1.0.0',
+    });
+    expect(card.supportedInterfaces).toHaveLength(1);
+    expect(card.supportedInterfaces[0].protocolBinding).toBe('HTTP+JSON');
+  });
+
+  it('constructs per-agent WS URL by appending agent name to acpWsUrl', () => {
+    const card = buildAgentCard('homer', { agent: 'homer', token: 'tok' }, {
+      publicBaseUrl: 'http://bridge.example.com',
+      bridgeVersion: '2.0.0',
+      acpWsUrl: 'wss://bridge.example.com:3030',
+    });
+    expect(card.supportedInterfaces[1].url).toBe('wss://bridge.example.com:3030/homer');
+  });
+});

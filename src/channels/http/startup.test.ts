@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { HttpPlatformConfig } from '../../types.js';
-import { buildHttpAuthConfig, buildHttpRouteBots } from './startup.js';
+import { buildAcpWsUrl, buildHttpAuthConfig, buildHttpRouteBots } from './startup.js';
 
 function createHttpConfig(overrides: Partial<HttpPlatformConfig> = {}): HttpPlatformConfig {
   return {
@@ -80,5 +80,30 @@ describe('http startup helpers', () => {
         agent: undefined,
       },
     });
+  });
+});
+
+describe('buildAcpWsUrl', () => {
+  it('converts http to ws and replaces port', () => {
+    expect(buildAcpWsUrl('http://localhost:7878', 3030)).toBe('ws://localhost:3030');
+  });
+
+  it('converts https to wss and replaces port', () => {
+    expect(buildAcpWsUrl('https://bridge.example.com', 3030))
+      .toBe('wss://bridge.example.com:3030');
+  });
+
+  it('handles URL without explicit port', () => {
+    expect(buildAcpWsUrl('http://bridge.example.com', 3030))
+      .toBe('ws://bridge.example.com:3030');
+  });
+
+  it('strips path from publicBaseUrl', () => {
+    expect(buildAcpWsUrl('http://localhost:7878/some/path', 3030))
+      .toBe('ws://localhost:3030');
+  });
+
+  it('returns undefined for invalid URL', () => {
+    expect(buildAcpWsUrl('not-a-url', 3030)).toBeUndefined();
   });
 });

@@ -572,13 +572,14 @@ async function main(): Promise<void> {
     }
   }
 
+  const acpConfig = getAcpPlatformConfig();
   const httpPlatform = config.platforms.http as HttpPlatformConfig | undefined;
   if (httpPlatform?.enabled) {
     const [
       { HttpChannelAdapter },
       { createHttpServer },
       { registerAuthHook },
-      { buildHttpAuthConfig, buildHttpRouteBots, registerHttpAcpRoutes },
+      { buildHttpAuthConfig, buildHttpRouteBots, registerHttpAcpRoutes, buildAcpWsUrl },
     ] = await Promise.all([
       import('./channels/http/index.js'),
       import('./channels/http/server.js'),
@@ -602,6 +603,7 @@ async function main(): Promise<void> {
         bots: httpBots,
         publicBaseUrl,
         bridgeVersion,
+        acpWsUrl: acpConfig ? buildAcpWsUrl(publicBaseUrl, acpConfig.port ?? 3030) : undefined,
         registerChannel: registerHttpChannel,
         createSessionWithPermissions: async (channelId, _bot, onPermissionRequest) => {
           const { sessionId } = await sessionManager.ensureSession(channelId, { onPermissionRequest });
@@ -642,7 +644,6 @@ async function main(): Promise<void> {
   }
 
   // Boot ACP WebSocket server if platforms.acp is configured
-  const acpConfig = getAcpPlatformConfig();
   if (acpConfig) {
     const { startAcpServer } = await import('./channels/acp/index.js');
     const acpServer = await startAcpServer(acpConfig, bridge);

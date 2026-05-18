@@ -14,6 +14,10 @@ export interface AgentCardRouteDeps {
   publicBaseUrl: string;
   // Bridge package version (read from package.json by caller).
   bridgeVersion: string;
+  // Optional ACP WebSocket base URL, e.g. "ws://localhost:3030".
+  // When present, each agent card includes an ACP+WS interface entry.
+  // Kanban appends "/<agentName>" to construct the per-agent WS URL.
+  acpWsUrl?: string;
 }
 
 const DEFAULT_INPUT_MODES = ['text/plain'];
@@ -59,7 +63,7 @@ export function registerAgentCardCatalogRoute(app: FastifyInstance, deps: AgentC
 export function buildAgentCard(
   name: string,
   bot: AgentCardBotConfig,
-  deps: Pick<AgentCardRouteDeps, 'publicBaseUrl' | 'bridgeVersion'>,
+  deps: Pick<AgentCardRouteDeps, 'publicBaseUrl' | 'bridgeVersion' | 'acpWsUrl'>,
 ): AgentCard {
   const baseUrl = deps.publicBaseUrl.replace(/\/+$/, '');
   return {
@@ -72,6 +76,15 @@ export function buildAgentCard(
         protocolBinding: 'HTTP+JSON',
         protocolVersion: '0.3',
       },
+      ...(deps.acpWsUrl
+        ? [
+            {
+              url: `${deps.acpWsUrl}/${name}`,
+              protocolBinding: 'ACP+WS',
+              protocolVersion: '1',
+            },
+          ]
+        : []),
     ],
     capabilities: {
       streaming: true,
