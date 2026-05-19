@@ -305,16 +305,18 @@ describe('AcpConnectionHandler', () => {
     await sessionNewPromise;
   });
 
-  it('closeAll aborts and disconnects all sessions', async () => {
+  it('closeAll only unsubscribes listeners, does not disconnect or abort the session', async () => {
     const sent: SentMessage[] = [];
-    const session = fakeSession();
+    const unsubscribe = vi.fn();
+    const session = fakeSession({ on: vi.fn(() => unsubscribe) });
     const { bridge } = bridgeWithSession(session);
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
     await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'session/new', params: {} }));
 
     await handler.closeAll();
 
-    expect(session.abort).toHaveBeenCalledOnce();
-    expect(session.disconnect).toHaveBeenCalledOnce();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(session.abort).not.toHaveBeenCalled();
+    expect(session.disconnect).not.toHaveBeenCalled();
   });
 });

@@ -322,16 +322,6 @@ export class AcpConnectionHandler {
   async closeAll(): Promise<void> {
     for (const [, entry] of this.sessions) {
       entry.unsubscribe();
-      try {
-        await entry.session.abort();
-      } catch {
-        // best-effort
-      }
-      try {
-        await entry.session.disconnect();
-      } catch {
-        // best-effort
-      }
     }
     this.sessions.clear();
 
