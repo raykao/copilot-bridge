@@ -182,12 +182,46 @@ export class AcpConnectionHandler {
 
   private async handleSessionResume(msg: JsonRpcRequest): Promise<void> {
     const params = (msg.params ?? {}) as { sessionId: string };
-    const entry = this.sessions.get(params.sessionId);
-    if (!entry) {
-      this.sendError(msg.id, -32002, 'Session not found');
+    const existing = this.sessions.get(params.sessionId);
+    if (existing) {
+      this.sendResponse(msg.id, { sessionId: params.sessionId });
       return;
     }
-    this.sendResponse(msg.id, { sessionId: params.sessionId });
+
+    const workingDirectory = this.botCfg.workingDirectory ?? process.cwd();
+    let agentName: string | undefined = this.botCfg.agent;
+    if (agentName) {
+      const customAgents = buildCustomAgents(workingDirectory);
+      if (!customAgents.some(a => a.name === agentName)) {
+        log.warn(`Agent "${agentName}" has no definition in ${workingDirectory}, falling back to AGENTS.md`);
+        agentName = undefined;
+      }
+    }
+
+    let session: CopilotSession;
+    try {
+      session = await this.bridge.resumeSession(params.sessionId, {
+        workingDirectory,
+        agent: agentName,
+        onPermissionRequest: this.makePermissionHandler(),
+      });
+    } catch (err) {
+      this.sendError(msg.id, -32002, `Failed to resume session: ${errorMessage(err)}`);
+      return;
+    }
+
+    const unsubscribe = session.on((event: SessionEvent) => {
+      const translated = translateSdkEvent(event);
+      if (!translated) return;
+      this.send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: { sessionId: session.sessionId, ...translated },
+      });
+    });
+    this.sessions.set(session.sessionId, { session, unsubscribe });
+
+    this.sendResponse(msg.id, { sessionId: session.sessionId });
   }
 
   private makePermissionHandler(): (

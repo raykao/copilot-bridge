@@ -26,6 +26,15 @@ interface CreateSessionOptions {
   ) => PermissionRequestResult | Promise<PermissionRequestResult>;
 }
 
+interface ResumeSessionOptions {
+  workingDirectory?: string;
+  agent?: string;
+  onPermissionRequest: (
+    request: { kind: 'shell'; toolCallId?: string },
+    invocation: { sessionId: string },
+  ) => PermissionRequestResult | Promise<PermissionRequestResult>;
+}
+
 function botConfig(): AcpBotConfig {
   return {
     agent: 'bob',
@@ -48,11 +57,14 @@ function fakeSession(overrides: Partial<FakeSession> = {}): FakeSession {
 function bridgeWithSession(session: FakeSession): {
   bridge: CopilotBridge;
   createSession: ReturnType<typeof vi.fn<(opts: CreateSessionOptions) => Promise<CopilotSession>>>;
+  resumeSession: ReturnType<typeof vi.fn<(sessionId: string, opts: ResumeSessionOptions) => Promise<CopilotSession>>>;
 } {
   const createSession = vi.fn(async (_opts: CreateSessionOptions) => session as unknown as CopilotSession);
+  const resumeSession = vi.fn(async (_sessionId: string, _opts: ResumeSessionOptions) => session as unknown as CopilotSession);
   return {
-    bridge: { createSession } as unknown as CopilotBridge,
+    bridge: { createSession, resumeSession } as unknown as CopilotBridge,
     createSession,
+    resumeSession,
   };
 }
 
@@ -180,6 +192,45 @@ describe('AcpConnectionHandler', () => {
       jsonrpc: '2.0',
       method: 'session/update',
       params: { sessionId: 's1', type: 'streaming', content: 'hi' },
+    });
+  });
+
+  it('falls through to bridge.resumeSession when sessionId is not in the in-memory map', async () => {
+    const sent: SentMessage[] = [];
+    let sessionHandler: SessionHandler | undefined;
+    const session = fakeSession({
+      sessionId: 'persisted-session',
+      on: vi.fn((handler: SessionHandler) => {
+        sessionHandler = handler;
+        return vi.fn();
+      }),
+    });
+    const { bridge, resumeSession } = bridgeWithSession(session);
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+
+    await handler.handle(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'session/resume',
+      params: { sessionId: 'persisted-session' },
+    }));
+
+    expect(resumeSession).toHaveBeenCalledOnce();
+    expect(resumeSession.mock.calls[0]?.[0]).toBe('persisted-session');
+    expect(sent).toContainEqual({ jsonrpc: '2.0', id: 3, result: { sessionId: 'persisted-session' } });
+
+    sessionHandler?.({
+      id: '1',
+      timestamp: '2026-01-01T00:00:00Z',
+      parentId: null,
+      type: 'assistant.streaming_delta',
+      data: { deltaContent: 'resumed' },
+    } as unknown as SessionEvent);
+
+    expect(sent).toContainEqual({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: { sessionId: 'persisted-session', type: 'streaming', content: 'resumed' },
     });
   });
 
