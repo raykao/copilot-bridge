@@ -121,9 +121,9 @@ export class AcpConnectionHandler {
 
   private toPermissionResult(r: SessionRequestPermissionResult): PermissionRequestResult {
     if (r.decision === 'allow') {
-      return { kind: 'approved' } as unknown as PermissionRequestResult;
+      return { kind: 'approve-once' };
     }
-    return { kind: 'denied-by-rules', rules: [] } as unknown as PermissionRequestResult;
+    return { kind: 'reject' };
   }
 
   private handleInitialize(msg: JsonRpcRequest): void {
