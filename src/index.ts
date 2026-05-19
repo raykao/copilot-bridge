@@ -533,7 +533,7 @@ async function main(): Promise<void> {
   // Boot ACP WebSocket server if platforms.acp is configured
   if (acpConfig) {
     const { startAcpServer } = await import('./channels/acp/index.js');
-    const acpServer = await startAcpServer(acpConfig, bridge);
+    const acpServer = await startAcpServer(acpConfig, bridge, bridgeVersion);
     log.info(`ACP server ready on ws://${acpConfig.bind ?? '127.0.0.1'}:${acpConfig.port ?? 3030}`);
     process.on('SIGTERM', () => {
       acpServer.close().catch((err) => log.error('ACP server close error', { err }));
