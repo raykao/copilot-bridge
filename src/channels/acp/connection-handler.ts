@@ -15,8 +15,8 @@ import type {
   SessionCloseParams,
   SessionRequestPermissionParams,
   SessionRequestPermissionResult,
-  SessionUpdateNotification,
 } from './types.js';
+import { translateSdkEvent } from './sdk-event-translator.js';
 import type {
   CopilotSession,
   PermissionRequest,
@@ -166,12 +166,13 @@ export class AcpConnectionHandler {
     }
 
     const unsubscribe = session.on((event: SessionEvent) => {
-      const notification: SessionUpdateNotification = {
+      const translated = translateSdkEvent(event);
+      if (!translated) return;
+      this.send({
         jsonrpc: '2.0',
         method: 'session/update',
-        params: { sessionId: session.sessionId, event },
-      };
-      this.send(notification);
+        params: { sessionId: session.sessionId, ...translated },
+      });
     });
     this.sessions.set(session.sessionId, { session, unsubscribe });
 

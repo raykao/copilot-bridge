@@ -126,6 +126,9 @@ describe('AcpConnectionHandler', () => {
     const session = fakeSession({
       on: vi.fn((handler: SessionHandler) => {
         subscriptionCount += 1;
+        if (subscriptionCount === 1) {
+          handler({ type: 'session.idle' } as SessionEvent);
+        }
         if (subscriptionCount === 2) {
           handler({ type: 'session.idle' } as SessionEvent);
         }
@@ -144,7 +147,40 @@ describe('AcpConnectionHandler', () => {
     }));
 
     expect(session.send).toHaveBeenCalledWith({ prompt: 'hello' });
+    expect(sent).toContainEqual({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: { sessionId: 's1', type: 'completed', content: '' },
+    });
     expect(sent).toContainEqual({ jsonrpc: '2.0', id: 2, result: { stopReason: 'idle' } });
+  });
+
+  it('translates assistant.streaming_delta into simplified streaming update', async () => {
+    const sent: SentMessage[] = [];
+    let sessionHandler: SessionHandler | undefined;
+    const session = fakeSession({
+      on: vi.fn((handler: SessionHandler) => {
+        sessionHandler = handler;
+        return vi.fn();
+      }),
+    });
+    const { bridge } = bridgeWithSession(session);
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+    await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'session/new', params: {} }));
+
+    sessionHandler?.({
+      id: '1',
+      timestamp: '2026-01-01T00:00:00Z',
+      parentId: null,
+      type: 'assistant.streaming_delta',
+      data: { deltaContent: 'hi' },
+    } as unknown as SessionEvent);
+
+    expect(sent).toContainEqual({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: { sessionId: 's1', type: 'streaming', content: 'hi' },
+    });
   });
 
   it('permission request parks and resolves on response', async () => {
