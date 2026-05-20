@@ -23,6 +23,9 @@ import type {
   SessionSubscribeParams,
   SessionSubscribeResult,
   SessionUnsubscribeParams,
+  SessionTranscriptParams,
+  SessionTranscriptResult,
+  Turn,
 } from './types.js';
 import type { SessionState } from '../../core/session-types.js';
 import { translateSdkEvent } from './sdk-event-translator.js';
@@ -119,6 +122,9 @@ export class AcpConnectionHandler {
         break;
       case 'session/unsubscribe':
         this.handleSessionUnsubscribe(request);
+        break;
+      case 'session/transcript':
+        await this.handleSessionTranscript(request);
         break;
       default:
         this.sendError(request.id, -32601, 'Method not found');
@@ -433,6 +439,38 @@ export class AcpConnectionHandler {
       this.subscriptions.delete(params.sessionId);
     }
     this.sendResponse(msg.id, {});
+  }
+
+  private async handleSessionTranscript(msg: JsonRpcRequest): Promise<void> {
+    const params = (msg.params ?? {}) as SessionTranscriptParams;
+    if (!params.sessionId) {
+      this.sendError(msg.id, -32600, 'Missing required field: sessionId');
+      return;
+    }
+    const since = params.since ?? 0;
+    const limit = params.limit ?? 200;
+    if (since < 0) {
+      this.sendError(msg.id, -32600, 'since must be >= 0');
+      return;
+    }
+    if (limit > 500) {
+      this.sendError(msg.id, -32600, 'limit must be <= 500');
+      return;
+    }
+    const { turns: storedTurns, hasMore, sessionFound } =
+      this.bridge.getSessionTranscript(params.sessionId, since, limit);
+    if (!sessionFound) {
+      this.sendError(msg.id, -32001, `Session not found: ${params.sessionId}`);
+      return;
+    }
+    const turns: Turn[] = storedTurns.map((t) => ({
+      turnIndex: t.turnIndex,
+      userMessage: t.userMessage,
+      assistantResponse: t.assistantResponse,
+      timestamp: t.timestamp,
+    }));
+    const result: SessionTranscriptResult = { sessionId: params.sessionId, turns, hasMore };
+    this.sendResponse(msg.id, result);
   }
 
   async closeAll(): Promise<void> {

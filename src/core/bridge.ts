@@ -20,7 +20,7 @@ import {
 import type { SessionHooks } from './hooks-loader.js';
 import type { BridgeProviderConfig } from '../types.js';
 import type { SessionStatus, SessionState } from './session-types.js';
-import { getCurrentTurnIndex } from './session-store-reader.js';
+import { getCurrentTurnIndex, getTurns, sessionExistsInStore, type StoredTurn } from './session-store-reader.js';
 
 // Re-export SDK ProviderConfig under the old name for backward compat
 export type SDKProviderConfig = ProviderConfig;
@@ -302,6 +302,24 @@ export class CopilotBridge {
 
   unsubscribeFromSession(sessionId: string, cb: (state: SessionState) => void): void {
     this.sessionSubscribers.get(sessionId)?.delete(cb);
+  }
+
+  getSessionTranscript(
+    sessionId: string,
+    since: number,
+    limit: number,
+  ): { turns: StoredTurn[]; hasMore: boolean; sessionFound: boolean } {
+    if (!sessionExistsInStore(sessionId)) {
+      return { turns: [], hasMore: false, sessionFound: false };
+    }
+    const capped = Math.min(limit, 500);
+    const rows = getTurns(sessionId, since, capped + 1);
+    const hasMore = rows.length > capped;
+    return {
+      turns: hasMore ? rows.slice(0, capped) : rows,
+      hasMore,
+      sessionFound: true,
+    };
   }
 
   async listSessions(filter?: SessionListFilter): Promise<SessionMetadata[]> {

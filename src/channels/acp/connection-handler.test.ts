@@ -4,6 +4,7 @@ import type { AcpBotConfig } from '../../types.js';
 import type { CopilotSession, PermissionHandler, PermissionRequestResult, SessionEvent } from '@github/copilot-sdk';
 import type { JsonRpcResponse } from './types.js';
 import type { SessionState } from '../../core/session-types.js';
+import type { StoredTurn } from '../../core/session-store-reader.js';
 import { AcpConnectionHandler } from './connection-handler.js';
 
 type SentMessage = Record<string, unknown>;
@@ -70,6 +71,7 @@ function bridgeWithSession(session: FakeSession): {
   getAllSessionStates: ReturnType<typeof vi.fn>;
   subscribeToSession: ReturnType<typeof vi.fn>;
   unsubscribeFromSession: ReturnType<typeof vi.fn>;
+  getSessionTranscript: ReturnType<typeof vi.fn<(id: string, since: number, limit: number) => { turns: StoredTurn[]; hasMore: boolean; sessionFound: boolean }>>;
   setSessionStatus: ReturnType<typeof vi.fn>;
 } {
   const createSession = vi.fn(async (_opts: CreateSessionOptions) => session as unknown as CopilotSession);
@@ -80,9 +82,14 @@ function bridgeWithSession(session: FakeSession): {
   const getAllSessionStates = vi.fn(async () => [] as SessionState[]);
   const subscribeToSession = vi.fn();
   const unsubscribeFromSession = vi.fn();
+  const getSessionTranscript = vi.fn((_id: string, _since: number, _limit: number) => ({
+    turns: [] as StoredTurn[],
+    hasMore: false,
+    sessionFound: false,
+  }));
   const setSessionStatus = vi.fn();
   return {
-    bridge: { createSession, resumeSession, getOrCreateBotSession, forceResumeSession, getSessionState, getAllSessionStates, subscribeToSession, unsubscribeFromSession, setSessionStatus } as unknown as CopilotBridge,
+    bridge: { createSession, resumeSession, getOrCreateBotSession, forceResumeSession, getSessionState, getAllSessionStates, subscribeToSession, unsubscribeFromSession, getSessionTranscript, setSessionStatus } as unknown as CopilotBridge,
     createSession,
     resumeSession,
     getOrCreateBotSession,
@@ -91,6 +98,7 @@ function bridgeWithSession(session: FakeSession): {
     getAllSessionStates,
     subscribeToSession,
     unsubscribeFromSession,
+    getSessionTranscript,
     setSessionStatus,
   };
 }
@@ -755,6 +763,119 @@ describe('AcpConnectionHandler', () => {
       await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'session/new', params: {} }));
       capturedHandler!({ type: 'session.in_progress' } as SessionEvent);
       expect(bridge.setSessionStatus).toHaveBeenCalledWith('s1', 'in_progress');
+    });
+  });
+
+  describe('session/transcript', () => {
+    it('returns turns from session-store', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const fakeTurns: StoredTurn[] = [
+        { turnIndex: 0, userMessage: 'hello', assistantResponse: 'hi there', timestamp: '2026-05-20T01:00:00.000Z' },
+        { turnIndex: 1, userMessage: 'how are you?', assistantResponse: 'great', timestamp: '2026-05-20T01:01:00.000Z' },
+      ];
+      (bridge.getSessionTranscript as ReturnType<typeof vi.fn>).mockReturnValue({
+        turns: fakeTurns, hasMore: false, sessionFound: true,
+      });
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'session/transcript', params: { sessionId: 's1', since: 0 } }));
+      expect(sent[0]).toMatchObject({
+        id: 1,
+        result: {
+          sessionId: 's1',
+          turns: [
+            { turnIndex: 0, userMessage: 'hello', assistantResponse: 'hi there' },
+            { turnIndex: 1, userMessage: 'how are you?', assistantResponse: 'great' },
+          ],
+          hasMore: false,
+        },
+      });
+    });
+
+    it('returns -32001 when session not found in session-store', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      (bridge.getSessionTranscript as ReturnType<typeof vi.fn>).mockReturnValue({ turns: [], hasMore: false, sessionFound: false });
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'session/transcript', params: { sessionId: 'ghost-id' } }));
+      expect(sent[0]).toMatchObject({ error: { code: -32001 } });
+    });
+
+    it('returns empty turns when session has no turns', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      (bridge.getSessionTranscript as ReturnType<typeof vi.fn>).mockReturnValue({ turns: [], hasMore: false, sessionFound: true });
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'session/transcript', params: { sessionId: 's1' } }));
+      expect(sent[0]).toMatchObject({ id: 3, result: { sessionId: 's1', turns: [], hasMore: false } });
+    });
+
+    it('returns hasMore: true when more turns exist', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      (bridge.getSessionTranscript as ReturnType<typeof vi.fn>).mockReturnValue({
+        turns: [{ turnIndex: 0, userMessage: 'a', assistantResponse: 'b', timestamp: '2026-01-01T00:00:00.000Z' }],
+        hasMore: true, sessionFound: true,
+      });
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'session/transcript', params: { sessionId: 's1', limit: 1 } }));
+      expect(sent[0]).toMatchObject({ id: 4, result: { hasMore: true } });
+    });
+
+    it('returns -32600 when sessionId missing', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'session/transcript', params: {} }));
+      expect(sent[0]).toMatchObject({ error: { code: -32600 } });
+    });
+
+    it('returns -32600 when since < 0', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'session/transcript', params: { sessionId: 's1', since: -1 } }));
+      expect(sent[0]).toMatchObject({ error: { code: -32600 } });
+    });
+
+    it('returns -32600 when limit > 500', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'session/transcript', params: { sessionId: 's1', limit: 501 } }));
+      expect(sent[0]).toMatchObject({ error: { code: -32600 } });
+    });
+
+    it('passes since and limit to bridge.getSessionTranscript', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      (bridge.getSessionTranscript as ReturnType<typeof vi.fn>).mockReturnValue({ turns: [], hasMore: false, sessionFound: true });
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 8, method: 'session/transcript', params: { sessionId: 's1', since: 5, limit: 50 } }));
+      expect(bridge.getSessionTranscript).toHaveBeenCalledWith('s1', 5, 50);
     });
   });
 

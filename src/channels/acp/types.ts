@@ -124,3 +124,24 @@ export interface SessionStateChangedNotification extends JsonRpcNotification {
   method: 'session/state_changed';
   params: SessionState;
 }
+
+// session/transcript
+
+export interface Turn {
+  turnIndex: number;
+  userMessage: string | null;
+  assistantResponse: string | null;
+  timestamp: string;
+}
+
+export interface SessionTranscriptParams {
+  sessionId: string;
+  since?: number;
+  limit?: number;
+}
+
+export interface SessionTranscriptResult {
+  sessionId: string;
+  turns: Turn[];
+  hasMore: boolean;
+}
