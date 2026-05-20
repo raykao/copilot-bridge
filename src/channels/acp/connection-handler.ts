@@ -112,6 +112,11 @@ export class AcpConnectionHandler {
     }
 
     this.pendingPermissions.delete(String(msg.id));
+    const rawDecision = msg.result !== undefined
+      ? ((msg.result as SessionRequestPermissionResult)?.decision ?? 'unknown')
+      : 'error';
+    const decision = rawDecision === 'deny' ? 'reject' : rawDecision;
+    log.info(`permission_resume_received wsReqId=${msg.id} decision=${decision}`);
     if (msg.result !== undefined) {
       pending.resolve(this.toPermissionResult(msg.result as SessionRequestPermissionResult));
     } else if (msg.error) {
@@ -161,6 +166,7 @@ export class AcpConnectionHandler {
         onPermissionRequest: this.makePermissionHandler(),
       });
     } catch (err) {
+      log.warn(`session_open_failed agent=${agentName ?? 'AGENTS.md'} error=${errorMessage(err)}`);
       this.sendError(msg.id, -32603, `Failed to create session: ${errorMessage(err)}`);
       return;
     }
@@ -168,6 +174,7 @@ export class AcpConnectionHandler {
     const unsubscribe = session.on((event: SessionEvent) => {
       const translated = translateSdkEvent(event);
       if (!translated) return;
+      log.debug(`session_update acpSessionId=${session.sessionId} kind=${(translated as { type?: string })?.type ?? 'unknown'}`);
       this.send({
         jsonrpc: '2.0',
         method: 'session/update',
@@ -177,6 +184,7 @@ export class AcpConnectionHandler {
     this.sessions.set(session.sessionId, { session, unsubscribe });
 
     const result: SessionNewResult = { sessionId: session.sessionId };
+    log.info(`session_open acpSessionId=${session.sessionId} agent=${agentName ?? 'AGENTS.md'} model=${model ?? 'default'}`);
     this.sendResponse(msg.id, result);
   }
 
@@ -184,6 +192,7 @@ export class AcpConnectionHandler {
     const params = (msg.params ?? {}) as { sessionId: string };
     const existing = this.sessions.get(params.sessionId);
     if (existing) {
+      log.info(`session_resume_cached acpSessionId=${params.sessionId}`);
       this.sendResponse(msg.id, { sessionId: params.sessionId });
       return;
     }
@@ -206,6 +215,7 @@ export class AcpConnectionHandler {
         onPermissionRequest: this.makePermissionHandler(),
       });
     } catch (err) {
+      log.warn(`session_resume_failed acpSessionId=${params.sessionId} error=${errorMessage(err)}`);
       this.sendError(msg.id, -32002, `Failed to resume session: ${errorMessage(err)}`);
       return;
     }
@@ -213,6 +223,7 @@ export class AcpConnectionHandler {
     const unsubscribe = session.on((event: SessionEvent) => {
       const translated = translateSdkEvent(event);
       if (!translated) return;
+      log.debug(`session_update acpSessionId=${session.sessionId} kind=${(translated as { type?: string })?.type ?? 'unknown'}`);
       this.send({
         jsonrpc: '2.0',
         method: 'session/update',
@@ -221,6 +232,7 @@ export class AcpConnectionHandler {
     });
     this.sessions.set(session.sessionId, { session, unsubscribe });
 
+    log.info(`session_resume acpSessionId=${session.sessionId} agent=${agentName ?? 'AGENTS.md'}`);
     this.sendResponse(msg.id, { sessionId: session.sessionId });
   }
 
@@ -243,6 +255,7 @@ export class AcpConnectionHandler {
         method: 'session/request_permission',
         params,
       });
+      log.info(`request_permission_sent acpSessionId=${invocation.sessionId} wsReqId=${requestId} kind=${request.kind}${request.toolCallId ? ` toolCallId=${request.toolCallId}` : ''}`);
 
       return new Promise<PermissionRequestResult>((resolve, reject) => {
         this.pendingPermissions.set(requestId, { resolve, reject });
@@ -317,10 +330,12 @@ export class AcpConnectionHandler {
     } catch {
       // best-effort
     }
+    log.info(`session_close acpSessionId=${params.sessionId}`);
     this.sendResponse(msg.id, {});
   }
 
   async closeAll(): Promise<void> {
+    log.info(`close_all sessions=${this.sessions.size} pendingPermissions=${this.pendingPermissions.size}`);
     for (const [, entry] of this.sessions) {
       entry.unsubscribe();
     }
