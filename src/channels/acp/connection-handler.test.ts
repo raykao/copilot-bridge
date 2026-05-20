@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CopilotBridge } from '../../core/bridge.js';
 import type { AcpBotConfig } from '../../types.js';
 import type { CopilotSession, PermissionRequestResult, SessionEvent } from '@github/copilot-sdk';
@@ -68,7 +68,15 @@ function bridgeWithSession(session: FakeSession): {
   };
 }
 
+function consoleLogCallsContain(spy: { mock: { calls: unknown[][] } }, expected: string): boolean {
+  return spy.mock.calls.some((call) => call.some((arg) => String(arg).includes(expected)));
+}
+
 describe('AcpConnectionHandler', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('malformed JSON sends parse error code -32700', async () => {
     const sent: SentMessage[] = [];
     const { bridge } = bridgeWithSession(fakeSession());
@@ -130,6 +138,18 @@ describe('AcpConnectionHandler', () => {
     expect(createSession).toHaveBeenCalledOnce();
     expect(createSession.mock.calls[0]?.[0].workingDirectory).toBe('/test/workspace');
     expect(sent).toContainEqual({ jsonrpc: '2.0', id: 2, result: { sessionId: 's1' } });
+  });
+
+  it('session/new logs session_open with acpSessionId', async () => {
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const sent: SentMessage[] = [];
+    const session = fakeSession();
+    const { bridge } = bridgeWithSession(session);
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+
+    await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'session/new', params: {} }));
+
+    expect(consoleLogCallsContain(consoleLogSpy, 'session_open acpSessionId=s1')).toBe(true);
   });
 
   it('session/prompt waits for idle and returns stopReason idle', async () => {
@@ -270,6 +290,80 @@ describe('AcpConnectionHandler', () => {
     await sessionNewPromise;
   });
 
+  it('request_permission triggers permission_sent log with wsReqId and kind', async () => {
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const sent: SentMessage[] = [];
+    let permissionPromise: Promise<PermissionRequestResult> | undefined;
+    const session = fakeSession();
+    const createSession = vi.fn(async (opts: CreateSessionOptions) => {
+      permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
+      return session as unknown as CopilotSession;
+    });
+    const bridge = { createSession } as unknown as CopilotBridge;
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+
+    const sessionNewPromise = handler.handle(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'session/new',
+      params: {},
+    }));
+
+    await vi.waitFor(() => {
+      expect(sent.some((msg) => msg.method === 'session/request_permission')).toBe(true);
+    });
+    const request = sent.find((msg) => msg.method === 'session/request_permission');
+    expect(request).toBeDefined();
+    const requestId = request?.id as string;
+    expect(consoleLogCallsContain(consoleLogSpy, `request_permission_sent acpSessionId=s1 wsReqId=${requestId} kind=shell`)).toBe(true);
+
+    await handler.handle(JSON.stringify({
+      jsonrpc: '2.0',
+      id: requestId,
+      result: { decision: 'allow' },
+    } satisfies JsonRpcResponse));
+    await expect(permissionPromise).resolves.toEqual({ kind: 'approve-once' });
+    await sessionNewPromise;
+  });
+
+  it('permission response logs permission_resume_received with decision', async () => {
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const sent: SentMessage[] = [];
+    let permissionPromise: Promise<PermissionRequestResult> | undefined;
+    const session = fakeSession();
+    const createSession = vi.fn(async (opts: CreateSessionOptions) => {
+      permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
+      return session as unknown as CopilotSession;
+    });
+    const bridge = { createSession } as unknown as CopilotBridge;
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+
+    const sessionNewPromise = handler.handle(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'session/new',
+      params: {},
+    }));
+
+    await vi.waitFor(() => {
+      expect(sent.some((msg) => msg.method === 'session/request_permission')).toBe(true);
+    });
+    const request = sent.find((msg) => msg.method === 'session/request_permission');
+    expect(request).toBeDefined();
+    const requestId = request?.id as string;
+    consoleLogSpy.mockClear();
+
+    await handler.handle(JSON.stringify({
+      jsonrpc: '2.0',
+      id: requestId,
+      result: { decision: 'allow' },
+    } satisfies JsonRpcResponse));
+
+    expect(consoleLogCallsContain(consoleLogSpy, `permission_resume_received wsReqId=${requestId} decision=allow`)).toBe(true);
+    await expect(permissionPromise).resolves.toEqual({ kind: 'approve-once' });
+    await sessionNewPromise;
+  });
+
   it('permission request forwards full request details', async () => {
     const sent: SentMessage[] = [];
     const session = fakeSession();
@@ -347,6 +441,25 @@ describe('AcpConnectionHandler', () => {
 
     await expect(permissionPromise).resolves.toEqual({ kind: 'reject' });
     await sessionNewPromise;
+  });
+
+  it('session/close logs session_close', async () => {
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const sent: SentMessage[] = [];
+    const session = fakeSession();
+    const { bridge } = bridgeWithSession(session);
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+    await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'session/new', params: {} }));
+    consoleLogSpy.mockClear();
+
+    await handler.handle(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'session/close',
+      params: { sessionId: 's1' },
+    }));
+
+    expect(consoleLogCallsContain(consoleLogSpy, 'session_close acpSessionId=s1')).toBe(true);
   });
 
   it('closeAll only unsubscribes listeners, does not disconnect or abort the session', async () => {
