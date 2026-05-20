@@ -16,6 +16,15 @@ import type {
   SessionRequestPermissionParams,
   SessionRequestPermissionResult,
 } from './types.js';
+import type {
+  SessionGetParams,
+  SessionGetResult,
+  SessionListResult,
+  SessionSubscribeParams,
+  SessionSubscribeResult,
+  SessionUnsubscribeParams,
+} from './types.js';
+import type { SessionState } from '../../core/session-types.js';
 import { translateSdkEvent } from './sdk-event-translator.js';
 import type {
   CopilotSession,
@@ -34,6 +43,7 @@ interface PendingPermission { resolve: (result: PermissionRequestResult) => void
 export class AcpConnectionHandler {
   private readonly sessions = new Map<string, SessionEntry>();
   private readonly pendingPermissions = new Map<string, PendingPermission>();
+  private readonly subscriptions = new Map<string, () => void>();
   private initialized = false;
 
   constructor(
@@ -97,6 +107,18 @@ export class AcpConnectionHandler {
         break;
       case 'session/close':
         await this.handleSessionClose(request);
+        break;
+      case 'session/get':
+        await this.handleSessionGet(request);
+        break;
+      case 'session/list':
+        await this.handleSessionList(request);
+        break;
+      case 'session/subscribe':
+        this.handleSessionSubscribe(request);
+        break;
+      case 'session/unsubscribe':
+        this.handleSessionUnsubscribe(request);
         break;
       default:
         this.sendError(request.id, -32601, 'Method not found');
@@ -171,19 +193,29 @@ export class AcpConnectionHandler {
 
     const unsubscribe = session.on((event: SessionEvent) => {
       const translated = translateSdkEvent(event);
-      if (!translated) return;
-      log.debug(`session_update acpSessionId=${session.sessionId} kind=${(translated as { type?: string })?.type ?? 'unknown'}`);
-      this.send({
-        jsonrpc: '2.0',
-        method: 'session/update',
-        params: { sessionId: session.sessionId, ...translated },
-      });
+      if (translated) {
+        log.debug(`session_update acpSessionId=${session.sessionId} kind=${(translated as { type?: string })?.type ?? 'unknown'}`);
+        this.send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: { sessionId: session.sessionId, ...translated },
+        });
+      }
+      const eventType: string = event.type;
+      if (eventType === 'session.in_progress') {
+        this.bridge.setSessionStatus(session.sessionId, 'in_progress');
+      } else if (eventType === 'session.idle' || eventType === 'agent_idle') {
+        this.bridge.setSessionStatus(session.sessionId, 'idle');
+      } else if (eventType === 'session.error') {
+        this.bridge.setSessionStatus(session.sessionId, 'error');
+      }
     });
     this.sessions.set(session.sessionId, { session, unsubscribe });
 
     const result: SessionNewResult = { sessionId: session.sessionId };
     log.info(`session_open acpSessionId=${session.sessionId} agent=${agentName ?? 'AGENTS.md'} model=${model ?? 'default'}`);
     this.sendResponse(msg.id, result);
+    this.bridge.setSessionStatus(session.sessionId, 'idle');
   }
 
   private async handleSessionResume(msg: JsonRpcRequest): Promise<void> {
@@ -220,18 +252,28 @@ export class AcpConnectionHandler {
 
     const unsubscribe = session.on((event: SessionEvent) => {
       const translated = translateSdkEvent(event);
-      if (!translated) return;
-      log.debug(`session_update acpSessionId=${session.sessionId} kind=${(translated as { type?: string })?.type ?? 'unknown'}`);
-      this.send({
-        jsonrpc: '2.0',
-        method: 'session/update',
-        params: { sessionId: session.sessionId, ...translated },
-      });
+      if (translated) {
+        log.debug(`session_update acpSessionId=${session.sessionId} kind=${(translated as { type?: string })?.type ?? 'unknown'}`);
+        this.send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: { sessionId: session.sessionId, ...translated },
+        });
+      }
+      const eventType: string = event.type;
+      if (eventType === 'session.in_progress') {
+        this.bridge.setSessionStatus(session.sessionId, 'in_progress');
+      } else if (eventType === 'session.idle' || eventType === 'agent_idle') {
+        this.bridge.setSessionStatus(session.sessionId, 'idle');
+      } else if (eventType === 'session.error') {
+        this.bridge.setSessionStatus(session.sessionId, 'error');
+      }
     });
     this.sessions.set(session.sessionId, { session, unsubscribe });
 
     log.info(`session_resume acpSessionId=${session.sessionId} agent=${agentName ?? 'AGENTS.md'}`);
     this.sendResponse(msg.id, { sessionId: session.sessionId });
+    this.bridge.setSessionStatus(session.sessionId, 'idle');
   }
 
   private makePermissionHandler(): (
@@ -332,12 +374,78 @@ export class AcpConnectionHandler {
     this.sendResponse(msg.id, {});
   }
 
+
+  private async handleSessionGet(msg: JsonRpcRequest): Promise<void> {
+    const params = (msg.params ?? {}) as SessionGetParams;
+    if (!params.sessionId) {
+      this.sendError(msg.id, -32600, 'Missing required field: sessionId');
+      return;
+    }
+    const state = this.bridge.getSessionState(params.sessionId);
+    if (!state) {
+      this.sendError(msg.id, -32001, `Session not found: ${params.sessionId}`);
+      return;
+    }
+    const result: SessionGetResult = state;
+    this.sendResponse(msg.id, result);
+  }
+
+  private async handleSessionList(msg: JsonRpcRequest): Promise<void> {
+    const states = await this.bridge.getAllSessionStates();
+    const result: SessionListResult = { sessions: states };
+    this.sendResponse(msg.id, result);
+  }
+
+  private handleSessionSubscribe(msg: JsonRpcRequest): void {
+    const params = (msg.params ?? {}) as SessionSubscribeParams;
+    if (!params.sessionId) {
+      this.sendError(msg.id, -32600, 'Missing required field: sessionId');
+      return;
+    }
+    const state = this.bridge.getSessionState(params.sessionId);
+    if (!state) {
+      this.sendError(msg.id, -32001, `Session not found: ${params.sessionId}`);
+      return;
+    }
+    // Idempotent: cancel existing subscription if any
+    const existing = this.subscriptions.get(params.sessionId);
+    if (existing) existing();
+
+    const cb = (newState: SessionState): void => {
+      this.send({ jsonrpc: '2.0', method: 'session/state_changed', params: newState });
+    };
+    this.bridge.subscribeToSession(params.sessionId, cb);
+    this.subscriptions.set(params.sessionId, () => this.bridge.unsubscribeFromSession(params.sessionId, cb));
+
+    const result: SessionSubscribeResult = { subscribed: true, sessionId: params.sessionId };
+    this.sendResponse(msg.id, result);
+  }
+
+  private handleSessionUnsubscribe(msg: JsonRpcRequest): void {
+    const params = (msg.params ?? {}) as SessionUnsubscribeParams;
+    if (!params.sessionId) {
+      this.sendError(msg.id, -32600, 'Missing required field: sessionId');
+      return;
+    }
+    const unsub = this.subscriptions.get(params.sessionId);
+    if (unsub) {
+      unsub();
+      this.subscriptions.delete(params.sessionId);
+    }
+    this.sendResponse(msg.id, {});
+  }
+
   async closeAll(): Promise<void> {
     log.info(`close_all sessions=${this.sessions.size} pendingPermissions=${this.pendingPermissions.size}`);
     for (const [, entry] of this.sessions) {
       entry.unsubscribe();
     }
     this.sessions.clear();
+
+    for (const [, unsub] of this.subscriptions) {
+      unsub();
+    }
+    this.subscriptions.clear();
 
     for (const [, pending] of this.pendingPermissions) {
       pending.reject(new Error('Connection closed'));

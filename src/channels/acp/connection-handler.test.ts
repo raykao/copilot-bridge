@@ -3,6 +3,7 @@ import { CopilotBridge } from '../../core/bridge.js';
 import type { AcpBotConfig } from '../../types.js';
 import type { CopilotSession, PermissionHandler, PermissionRequestResult, SessionEvent } from '@github/copilot-sdk';
 import type { JsonRpcResponse } from './types.js';
+import type { SessionState } from '../../core/session-types.js';
 import { AcpConnectionHandler } from './connection-handler.js';
 
 type SentMessage = Record<string, unknown>;
@@ -65,17 +66,45 @@ function bridgeWithSession(session: FakeSession): {
   resumeSession: ReturnType<typeof vi.fn<(sessionId: string, opts: ResumeSessionOptions) => Promise<CopilotSession>>>;
   getOrCreateBotSession: ReturnType<typeof vi.fn<(workingDirectory: string, agent: string | undefined, opts: BotSessionOptions) => Promise<CopilotSession>>>;
   forceResumeSession: ReturnType<typeof vi.fn<(sessionId: string, opts: ResumeSessionOptions) => Promise<CopilotSession>>>;
+  getSessionState: ReturnType<typeof vi.fn>;
+  getAllSessionStates: ReturnType<typeof vi.fn>;
+  subscribeToSession: ReturnType<typeof vi.fn>;
+  unsubscribeFromSession: ReturnType<typeof vi.fn>;
+  setSessionStatus: ReturnType<typeof vi.fn>;
 } {
   const createSession = vi.fn(async (_opts: CreateSessionOptions) => session as unknown as CopilotSession);
   const resumeSession = vi.fn(async (_sessionId: string, _opts: ResumeSessionOptions) => session as unknown as CopilotSession);
   const getOrCreateBotSession = vi.fn(async (_workingDirectory: string, _agent: string | undefined, _opts: BotSessionOptions) => session as unknown as CopilotSession);
   const forceResumeSession = vi.fn(async (_sessionId: string, _opts: ResumeSessionOptions) => session as unknown as CopilotSession);
+  const getSessionState = vi.fn((_id: string) => null as SessionState | null);
+  const getAllSessionStates = vi.fn(async () => [] as SessionState[]);
+  const subscribeToSession = vi.fn();
+  const unsubscribeFromSession = vi.fn();
+  const setSessionStatus = vi.fn();
   return {
-    bridge: { createSession, resumeSession, getOrCreateBotSession, forceResumeSession } as unknown as CopilotBridge,
+    bridge: { createSession, resumeSession, getOrCreateBotSession, forceResumeSession, getSessionState, getAllSessionStates, subscribeToSession, unsubscribeFromSession, setSessionStatus } as unknown as CopilotBridge,
     createSession,
     resumeSession,
     getOrCreateBotSession,
     forceResumeSession,
+    getSessionState,
+    getAllSessionStates,
+    subscribeToSession,
+    unsubscribeFromSession,
+    setSessionStatus,
+  };
+}
+
+
+function defaultState(overrides: Partial<SessionState> = {}): SessionState {
+  return {
+    id: 's1',
+    agent: 'bob',
+    status: 'idle',
+    currentTurnIndex: 3,
+    pendingPermissions: [],
+    updatedAt: '2026-05-20T15:00:00.000Z',
+    ...overrides,
   };
 }
 
@@ -157,9 +186,17 @@ describe('AcpConnectionHandler', () => {
     const bridgeInternals = bridge as unknown as {
       sessions: Map<string, CopilotSession>;
       botSessionRegistry: Map<string, string>;
+      sessionStatuses: Map<string, unknown>;
+      sessionAgents: Map<string, string | null>;
+      sessionUpdatedAt: Map<string, string>;
+      sessionSubscribers: Map<string, Set<(state: SessionState) => void>>;
     };
     bridgeInternals.sessions = new Map();
     bridgeInternals.botSessionRegistry = new Map();
+    bridgeInternals.sessionStatuses = new Map();
+    bridgeInternals.sessionAgents = new Map();
+    bridgeInternals.sessionUpdatedAt = new Map();
+    bridgeInternals.sessionSubscribers = new Map();
     const session = fakeSession();
     const createSession = vi.spyOn(bridge, 'createSession')
       .mockImplementation(async () => {
@@ -307,7 +344,7 @@ describe('AcpConnectionHandler', () => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -344,7 +381,7 @@ describe('AcpConnectionHandler', () => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -380,7 +417,7 @@ describe('AcpConnectionHandler', () => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -418,7 +455,7 @@ describe('AcpConnectionHandler', () => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -459,7 +496,7 @@ describe('AcpConnectionHandler', () => {
       }, { sessionId: 's1' });
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -500,7 +537,7 @@ describe('AcpConnectionHandler', () => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -560,4 +597,165 @@ describe('AcpConnectionHandler', () => {
     expect(session.abort).not.toHaveBeenCalled();
     expect(session.disconnect).not.toHaveBeenCalled();
   });
+
+  describe('session query methods', () => {
+    it('session/get returns state for known session', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const state = defaultState({ id: 's1' });
+      (bridge.getSessionState as ReturnType<typeof vi.fn>).mockReturnValue(state);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'session/get', params: { sessionId: 's1' } }));
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({ jsonrpc: '2.0', id: 1, result: state });
+    });
+
+    it('session/get returns -32001 for unknown session', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      (bridge.getSessionState as ReturnType<typeof vi.fn>).mockReturnValue(null);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'session/get', params: { sessionId: 'unknown-id' } }));
+      expect(sent[0]).toMatchObject({ error: { code: -32001 } });
+    });
+
+    it('session/get returns -32600 when sessionId missing', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'session/get', params: {} }));
+      expect(sent[0]).toMatchObject({ error: { code: -32600 } });
+    });
+
+    it('session/list returns sessions array', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const state = defaultState({ id: 's1' });
+      (bridge.getAllSessionStates as ReturnType<typeof vi.fn>).mockResolvedValue([state]);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'session/list', params: {} }));
+      expect(sent[0]).toMatchObject({ id: 4, result: { sessions: [state] } });
+    });
+
+    it('session/subscribe returns ack and registers callback with bridge', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const state = defaultState({ id: 's1' });
+      (bridge.getSessionState as ReturnType<typeof vi.fn>).mockReturnValue(state);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'session/subscribe', params: { sessionId: 's1' } }));
+      expect(sent[0]).toMatchObject({ id: 5, result: { subscribed: true, sessionId: 's1' } });
+      expect(bridge.subscribeToSession).toHaveBeenCalledWith('s1', expect.any(Function));
+    });
+
+    it('session/subscribe sends session/state_changed when callback fires', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const state = defaultState({ id: 's1' });
+      (bridge.getSessionState as ReturnType<typeof vi.fn>).mockReturnValue(state);
+      let capturedCb: ((s: SessionState) => void) | null = null;
+      (bridge.subscribeToSession as ReturnType<typeof vi.fn>).mockImplementation(
+        (_id: string, cb: (s: SessionState) => void) => { capturedCb = cb; }
+      );
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'session/subscribe', params: { sessionId: 's1' } }));
+      sent.length = 0;
+      const updatedState = defaultState({ id: 's1', status: 'in_progress' });
+      capturedCb!(updatedState);
+      expect(sent[0]).toMatchObject({ method: 'session/state_changed', params: updatedState });
+    });
+
+    it('session/subscribe is idempotent - second subscribe cancels first', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const state = defaultState({ id: 's1' });
+      (bridge.getSessionState as ReturnType<typeof vi.fn>).mockReturnValue(state);
+      const callbacks: Array<(s: SessionState) => void> = [];
+      (bridge.subscribeToSession as ReturnType<typeof vi.fn>).mockImplementation(
+        (_id: string, cb: (s: SessionState) => void) => callbacks.push(cb)
+      );
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'session/subscribe', params: { sessionId: 's1' } }));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'session/subscribe', params: { sessionId: 's1' } }));
+      expect(bridge.unsubscribeFromSession).toHaveBeenCalledTimes(1);
+      expect(bridge.subscribeToSession).toHaveBeenCalledTimes(2);
+    });
+
+    it('session/unsubscribe calls unsubscribeFromSession and returns success', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const state = defaultState({ id: 's1' });
+      (bridge.getSessionState as ReturnType<typeof vi.fn>).mockReturnValue(state);
+      (bridge.subscribeToSession as ReturnType<typeof vi.fn>).mockImplementation(() => {});
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'session/subscribe', params: { sessionId: 's1' } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'session/unsubscribe', params: { sessionId: 's1' } }));
+      expect(sent[0]).toMatchObject({ id: 7, result: {} });
+      expect(bridge.unsubscribeFromSession).toHaveBeenCalledWith('s1', expect.any(Function));
+    });
+
+    it('session/unsubscribe for non-subscribed session returns success', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      sent.length = 0;
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 8, method: 'session/unsubscribe', params: { sessionId: 'not-subscribed' } }));
+      expect(sent[0]).toMatchObject({ id: 8, result: {} });
+    });
+
+    it('closeAll cleans up subscriptions', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const state = defaultState({ id: 's1' });
+      (bridge.getSessionState as ReturnType<typeof vi.fn>).mockReturnValue(state);
+      (bridge.subscribeToSession as ReturnType<typeof vi.fn>).mockImplementation(() => {});
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'session/subscribe', params: { sessionId: 's1' } }));
+      await handler.closeAll();
+      expect(bridge.unsubscribeFromSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('session.in_progress SDK event triggers setSessionStatus in_progress', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      let capturedHandler: ((event: SessionEvent) => void) | null = null;
+      session.on.mockImplementation((h: (event: SessionEvent) => void) => {
+        capturedHandler = h;
+        return vi.fn();
+      });
+      const { bridge } = bridgeWithSession(session);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'session/new', params: {} }));
+      capturedHandler!({ type: 'session.in_progress' } as SessionEvent);
+      expect(bridge.setSessionStatus).toHaveBeenCalledWith('s1', 'in_progress');
+    });
+  });
+
 });

@@ -19,6 +19,8 @@ import {
 } from '@github/copilot-sdk';
 import type { SessionHooks } from './hooks-loader.js';
 import type { BridgeProviderConfig } from '../types.js';
+import type { SessionStatus, SessionState } from './session-types.js';
+import { getCurrentTurnIndex } from './session-store-reader.js';
 
 // Re-export SDK ProviderConfig under the old name for backward compat
 export type SDKProviderConfig = ProviderConfig;
@@ -33,6 +35,10 @@ export class CopilotBridge {
   private client: CopilotClient;
   private sessions = new Map<string, CopilotSession>();
   private readonly botSessionRegistry = new Map<string, string>();
+  private readonly sessionStatuses = new Map<string, SessionStatus>();
+  private readonly sessionAgents = new Map<string, string | null>();
+  private readonly sessionUpdatedAt = new Map<string, string>();
+  private readonly sessionSubscribers = new Map<string, Set<(state: SessionState) => void>>();
   private started = false;
   private lifecycleUnsubscribe?: () => void;
 
@@ -61,6 +67,10 @@ export class CopilotBridge {
       try { await session.disconnect(); } catch { /* best-effort */ }
     }
     this.sessions.clear();
+    this.sessionStatuses.clear();
+    this.sessionAgents.clear();
+    this.sessionUpdatedAt.clear();
+    this.sessionSubscribers.clear();
     this.lifecycleUnsubscribe?.();
     this.lifecycleUnsubscribe = undefined;
     await this.client.stop();
@@ -165,6 +175,11 @@ export class CopilotBridge {
       ...(opts?.infiniteSessions ? { infiniteSessions: { enabled: true } } : { infiniteSessions: { enabled: false } }),
     });
     this.sessions.set(session.sessionId, session);
+    if (!this.sessionStatuses.has(session.sessionId)) {
+      this.sessionAgents.set(session.sessionId, opts?.agent ?? null);
+      this.sessionStatuses.set(session.sessionId, 'idle');
+      this.sessionUpdatedAt.set(session.sessionId, new Date().toISOString());
+    }
     return session;
   }
 
@@ -220,7 +235,73 @@ export class CopilotBridge {
       onUserInputRequest: opts.onUserInputRequest,
     });
     this.botSessionRegistry.set(key, session.sessionId);
+    this.sessionAgents.set(session.sessionId, agent ?? null);
+    if (!this.sessionStatuses.has(session.sessionId)) {
+      this.sessionStatuses.set(session.sessionId, 'idle');
+      this.sessionUpdatedAt.set(session.sessionId, new Date().toISOString());
+    }
     return session;
+  }
+
+
+  setSessionStatus(id: string, status: SessionStatus): void {
+    this.sessionStatuses.set(id, status);
+    this.sessionUpdatedAt.set(id, new Date().toISOString());
+    this.notifySessionSubscribers(id);
+  }
+
+  private notifySessionSubscribers(id: string): void {
+    const subs = this.sessionSubscribers.get(id);
+    if (!subs || subs.size === 0) return;
+    const state = this.buildSessionState(id);
+    if (!state) return;
+    for (const cb of subs) {
+      cb(state);
+    }
+  }
+
+  private buildSessionState(id: string): SessionState | null {
+    if (!this.sessionStatuses.has(id)) return null;
+    return {
+      id,
+      agent: this.sessionAgents.get(id) ?? null,
+      status: this.sessionStatuses.get(id) ?? 'unknown',
+      currentTurnIndex: getCurrentTurnIndex(id),
+      pendingPermissions: [],
+      updatedAt: this.sessionUpdatedAt.get(id) ?? new Date().toISOString(),
+    };
+  }
+
+  getSessionState(id: string): SessionState | null {
+    return this.buildSessionState(id);
+  }
+
+  async getAllSessionStates(): Promise<SessionState[]> {
+    await this.start();
+    const metadataList = await this.client.listSessions();
+    return metadataList
+      .map((meta) => ({
+        id: meta.sessionId,
+        agent: this.sessionAgents.get(meta.sessionId) ?? null,
+        status: this.sessionStatuses.get(meta.sessionId) ?? ('unknown' as SessionStatus),
+        currentTurnIndex: getCurrentTurnIndex(meta.sessionId),
+        pendingPermissions: [],
+        updatedAt: this.sessionUpdatedAt.get(meta.sessionId) ?? meta.modifiedTime.toISOString(),
+      }))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  subscribeToSession(sessionId: string, cb: (state: SessionState) => void): void {
+    let subs = this.sessionSubscribers.get(sessionId);
+    if (!subs) {
+      subs = new Set();
+      this.sessionSubscribers.set(sessionId, subs);
+    }
+    subs.add(cb);
+  }
+
+  unsubscribeFromSession(sessionId: string, cb: (state: SessionState) => void): void {
+    this.sessionSubscribers.get(sessionId)?.delete(cb);
   }
 
   async listSessions(filter?: SessionListFilter): Promise<SessionMetadata[]> {

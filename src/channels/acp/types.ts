@@ -1,3 +1,5 @@
+import type { SessionStatus, PendingPermission, SessionState } from '../../core/session-types.js';
+export type { SessionStatus, PendingPermission, SessionState };
 import type { SessionEvent } from '@github/copilot-sdk';
 
 // JSON-RPC 2.0 base types
@@ -87,4 +89,38 @@ export interface SessionUpdateNotification extends JsonRpcNotification {
     sessionId: string;
     event: SessionEvent;
   };
+}
+
+
+// session/get
+export interface SessionGetParams {
+  sessionId: string;
+}
+export type SessionGetResult = SessionState;
+
+// session/list
+export interface SessionListParams {}
+export interface SessionListResult {
+  sessions: SessionState[];
+}
+
+// session/subscribe
+export interface SessionSubscribeParams {
+  sessionId: string;
+}
+export interface SessionSubscribeResult {
+  subscribed: true;
+  sessionId: string;
+}
+
+// session/unsubscribe
+export interface SessionUnsubscribeParams {
+  sessionId: string;
+}
+export interface SessionUnsubscribeResult {}
+
+// Server-sent notification
+export interface SessionStateChangedNotification extends JsonRpcNotification {
+  method: 'session/state_changed';
+  params: SessionState;
 }
