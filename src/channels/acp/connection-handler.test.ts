@@ -21,7 +21,7 @@ interface CreateSessionOptions {
   model?: string;
   agent?: string;
   onPermissionRequest: (
-    request: { kind: 'shell'; toolCallId?: string },
+    request: { kind: 'shell'; toolCallId?: string; fullCommandText?: string; intention?: string },
     invocation: { sessionId: string },
   ) => PermissionRequestResult | Promise<PermissionRequestResult>;
 }
@@ -30,7 +30,7 @@ interface ResumeSessionOptions {
   workingDirectory?: string;
   agent?: string;
   onPermissionRequest: (
-    request: { kind: 'shell'; toolCallId?: string },
+    request: { kind: 'shell'; toolCallId?: string; fullCommandText?: string; intention?: string },
     invocation: { sessionId: string },
   ) => PermissionRequestResult | Promise<PermissionRequestResult>;
 }
@@ -267,6 +267,50 @@ describe('AcpConnectionHandler', () => {
     await handler.handle(JSON.stringify(response));
 
     await expect(permissionPromise).resolves.toEqual({ kind: 'approve-once' });
+    await sessionNewPromise;
+  });
+
+  it('permission request forwards full request details', async () => {
+    const sent: SentMessage[] = [];
+    const session = fakeSession();
+    const createSession = vi.fn(async (opts: CreateSessionOptions) => {
+      void opts.onPermissionRequest({
+        kind: 'shell',
+        fullCommandText: 'ls /tmp',
+        intention: 'List a directory',
+      }, { sessionId: 's1' });
+      return session as unknown as CopilotSession;
+    });
+    const bridge = { createSession } as unknown as CopilotBridge;
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+
+    const sessionNewPromise = handler.handle(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'session/new',
+      params: {},
+    }));
+
+    await vi.waitFor(() => {
+      expect(sent.some((msg) => msg.method === 'session/request_permission')).toBe(true);
+    });
+    const request = sent.find((msg) => msg.method === 'session/request_permission');
+    expect(request).toBeDefined();
+    expect(request?.params).toMatchObject({
+      kind: 'shell',
+      request: {
+        kind: 'shell',
+        fullCommandText: 'ls /tmp',
+        intention: 'List a directory',
+      },
+    });
+
+    const response: JsonRpcResponse = {
+      jsonrpc: '2.0',
+      id: request?.id as string,
+      result: { decision: 'allow' },
+    };
+    await handler.handle(JSON.stringify(response));
     await sessionNewPromise;
   });
 

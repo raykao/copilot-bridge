@@ -69,6 +69,10 @@ export interface SessionRequestPermissionParams {
   sessionId: string;
   kind: string;
   toolCallId?: string;
+  // Full SDK PermissionRequest object, forwarded as-is so the client can render
+  // kind-specific details. Kept loosely typed here because the SDK schema is
+  // versioned upstream and the bridge intentionally pass-throughs.
+  request?: unknown;
 }
 
 export interface SessionRequestPermissionResult {

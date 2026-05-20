@@ -234,6 +234,7 @@ export class AcpConnectionHandler {
         sessionId: invocation.sessionId,
         kind: request.kind,
         ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
+        request,
       } satisfies SessionRequestPermissionParams;
 
       this.send({
