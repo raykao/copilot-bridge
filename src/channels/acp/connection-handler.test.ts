@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CopilotBridge } from '../../core/bridge.js';
+import { CopilotBridge } from '../../core/bridge.js';
 import type { AcpBotConfig } from '../../types.js';
-import type { CopilotSession, PermissionRequestResult, SessionEvent } from '@github/copilot-sdk';
+import type { CopilotSession, PermissionHandler, PermissionRequestResult, SessionEvent } from '@github/copilot-sdk';
 import type { JsonRpcResponse } from './types.js';
 import { AcpConnectionHandler } from './connection-handler.js';
 
@@ -14,16 +14,20 @@ interface FakeSession {
   on: ReturnType<typeof vi.fn<(handler: SessionHandler) => () => void>>;
   abort: ReturnType<typeof vi.fn<() => Promise<void>>>;
   disconnect: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  registerPermissionHandler: ReturnType<typeof vi.fn<(handler: PermissionHandler) => void>>;
 }
 
-interface CreateSessionOptions {
-  workingDirectory?: string;
+interface BotSessionOptions {
   model?: string;
-  agent?: string;
   onPermissionRequest: (
     request: { kind: 'shell'; toolCallId?: string; fullCommandText?: string; intention?: string },
     invocation: { sessionId: string },
   ) => PermissionRequestResult | Promise<PermissionRequestResult>;
+}
+
+interface CreateSessionOptions extends BotSessionOptions {
+  workingDirectory?: string;
+  agent?: string;
 }
 
 interface ResumeSessionOptions {
@@ -50,6 +54,7 @@ function fakeSession(overrides: Partial<FakeSession> = {}): FakeSession {
     on: vi.fn(() => vi.fn()),
     abort: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),
+    registerPermissionHandler: vi.fn(),
     ...overrides,
   };
 }
@@ -58,13 +63,19 @@ function bridgeWithSession(session: FakeSession): {
   bridge: CopilotBridge;
   createSession: ReturnType<typeof vi.fn<(opts: CreateSessionOptions) => Promise<CopilotSession>>>;
   resumeSession: ReturnType<typeof vi.fn<(sessionId: string, opts: ResumeSessionOptions) => Promise<CopilotSession>>>;
+  getOrCreateBotSession: ReturnType<typeof vi.fn<(workingDirectory: string, agent: string | undefined, opts: BotSessionOptions) => Promise<CopilotSession>>>;
+  forceResumeSession: ReturnType<typeof vi.fn<(sessionId: string, opts: ResumeSessionOptions) => Promise<CopilotSession>>>;
 } {
   const createSession = vi.fn(async (_opts: CreateSessionOptions) => session as unknown as CopilotSession);
   const resumeSession = vi.fn(async (_sessionId: string, _opts: ResumeSessionOptions) => session as unknown as CopilotSession);
+  const getOrCreateBotSession = vi.fn(async (_workingDirectory: string, _agent: string | undefined, _opts: BotSessionOptions) => session as unknown as CopilotSession);
+  const forceResumeSession = vi.fn(async (_sessionId: string, _opts: ResumeSessionOptions) => session as unknown as CopilotSession);
   return {
-    bridge: { createSession, resumeSession } as unknown as CopilotBridge,
+    bridge: { createSession, resumeSession, getOrCreateBotSession, forceResumeSession } as unknown as CopilotBridge,
     createSession,
     resumeSession,
+    getOrCreateBotSession,
+    forceResumeSession,
   };
 }
 
@@ -127,17 +138,50 @@ describe('AcpConnectionHandler', () => {
     ]);
   });
 
-  it("session/new creates session and returns sessionId, createSession called with workingDirectory '/test/workspace'", async () => {
+  it("session/new gets bot session and returns sessionId with workingDirectory '/test/workspace'", async () => {
     const sent: SentMessage[] = [];
     const session = fakeSession();
-    const { bridge, createSession } = bridgeWithSession(session);
+    const { bridge, createSession, getOrCreateBotSession } = bridgeWithSession(session);
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'session/new', params: {} }));
 
-    expect(createSession).toHaveBeenCalledOnce();
-    expect(createSession.mock.calls[0]?.[0].workingDirectory).toBe('/test/workspace');
+    expect(getOrCreateBotSession).toHaveBeenCalledOnce();
+    expect(getOrCreateBotSession.mock.calls[0]?.[0]).toBe('/test/workspace');
+    expect(createSession).not.toHaveBeenCalled();
     expect(sent).toContainEqual({ jsonrpc: '2.0', id: 2, result: { sessionId: 's1' } });
+  });
+
+  it('getOrCreateBotSession returns same cached bot session on second call', async () => {
+    const bridge = Object.create(CopilotBridge.prototype) as CopilotBridge;
+    const bridgeInternals = bridge as unknown as {
+      sessions: Map<string, CopilotSession>;
+      botSessionRegistry: Map<string, string>;
+    };
+    bridgeInternals.sessions = new Map();
+    bridgeInternals.botSessionRegistry = new Map();
+    const session = fakeSession();
+    const createSession = vi.spyOn(bridge, 'createSession')
+      .mockImplementation(async () => {
+        bridgeInternals.sessions.set(session.sessionId, session as unknown as CopilotSession);
+        return session as unknown as CopilotSession;
+      });
+    const firstPermissionHandler = vi.fn();
+    const secondPermissionHandler = vi.fn();
+
+    const first = await bridge.getOrCreateBotSession('/test/workspace', 'bob', {
+      model: 'claude-sonnet-4.6',
+      onPermissionRequest: firstPermissionHandler,
+    });
+    const second = await bridge.getOrCreateBotSession('/test/workspace', 'bob', {
+      model: 'claude-sonnet-4.6',
+      onPermissionRequest: secondPermissionHandler,
+    });
+
+    expect(first).toBe(second);
+    expect(createSession).toHaveBeenCalledOnce();
+    expect(session.registerPermissionHandler).toHaveBeenCalledOnce();
+    expect(session.registerPermissionHandler).toHaveBeenCalledWith(secondPermissionHandler);
   });
 
   it('session/new logs session_open with acpSessionId', async () => {
@@ -215,7 +259,7 @@ describe('AcpConnectionHandler', () => {
     });
   });
 
-  it('falls through to bridge.resumeSession when sessionId is not in the in-memory map', async () => {
+  it('forces bridge resume when sessionId is not in the in-memory map', async () => {
     const sent: SentMessage[] = [];
     let sessionHandler: SessionHandler | undefined;
     const session = fakeSession({
@@ -225,7 +269,7 @@ describe('AcpConnectionHandler', () => {
         return vi.fn();
       }),
     });
-    const { bridge, resumeSession } = bridgeWithSession(session);
+    const { bridge, resumeSession, forceResumeSession } = bridgeWithSession(session);
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     await handler.handle(JSON.stringify({
@@ -235,8 +279,9 @@ describe('AcpConnectionHandler', () => {
       params: { sessionId: 'persisted-session' },
     }));
 
-    expect(resumeSession).toHaveBeenCalledOnce();
-    expect(resumeSession.mock.calls[0]?.[0]).toBe('persisted-session');
+    expect(forceResumeSession).toHaveBeenCalledOnce();
+    expect(forceResumeSession.mock.calls[0]?.[0]).toBe('persisted-session');
+    expect(resumeSession).not.toHaveBeenCalled();
     expect(sent).toContainEqual({ jsonrpc: '2.0', id: 3, result: { sessionId: 'persisted-session' } });
 
     sessionHandler?.({
@@ -258,11 +303,11 @@ describe('AcpConnectionHandler', () => {
     const sent: SentMessage[] = [];
     let permissionPromise: Promise<PermissionRequestResult> | undefined;
     const session = fakeSession();
-    const createSession = vi.fn(async (opts: CreateSessionOptions) => {
+    const getOrCreateBotSession = vi.fn(async (_workingDirectory: string, _agent: string | undefined, opts: BotSessionOptions) => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { createSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -295,11 +340,11 @@ describe('AcpConnectionHandler', () => {
     const sent: SentMessage[] = [];
     let permissionPromise: Promise<PermissionRequestResult> | undefined;
     const session = fakeSession();
-    const createSession = vi.fn(async (opts: CreateSessionOptions) => {
+    const getOrCreateBotSession = vi.fn(async (_workingDirectory: string, _agent: string | undefined, opts: BotSessionOptions) => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { createSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -331,11 +376,11 @@ describe('AcpConnectionHandler', () => {
     const sent: SentMessage[] = [];
     let permissionPromise: Promise<PermissionRequestResult> | undefined;
     const session = fakeSession();
-    const createSession = vi.fn(async (opts: CreateSessionOptions) => {
+    const getOrCreateBotSession = vi.fn(async (_workingDirectory: string, _agent: string | undefined, opts: BotSessionOptions) => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { createSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -369,11 +414,11 @@ describe('AcpConnectionHandler', () => {
     const sent: SentMessage[] = [];
     let permissionPromise: Promise<PermissionRequestResult> | undefined;
     const session = fakeSession();
-    const createSession = vi.fn(async (opts: CreateSessionOptions) => {
+    const getOrCreateBotSession = vi.fn(async (_workingDirectory: string, _agent: string | undefined, opts: BotSessionOptions) => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { createSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -406,7 +451,7 @@ describe('AcpConnectionHandler', () => {
   it('permission request forwards full request details', async () => {
     const sent: SentMessage[] = [];
     const session = fakeSession();
-    const createSession = vi.fn(async (opts: CreateSessionOptions) => {
+    const getOrCreateBotSession = vi.fn(async (_workingDirectory: string, _agent: string | undefined, opts: BotSessionOptions) => {
       void opts.onPermissionRequest({
         kind: 'shell',
         fullCommandText: 'ls /tmp',
@@ -414,7 +459,7 @@ describe('AcpConnectionHandler', () => {
       }, { sessionId: 's1' });
       return session as unknown as CopilotSession;
     });
-    const bridge = { createSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -451,11 +496,11 @@ describe('AcpConnectionHandler', () => {
     const sent: SentMessage[] = [];
     let permissionPromise: Promise<PermissionRequestResult> | undefined;
     const session = fakeSession();
-    const createSession = vi.fn(async (opts: CreateSessionOptions) => {
+    const getOrCreateBotSession = vi.fn(async (_workingDirectory: string, _agent: string | undefined, opts: BotSessionOptions) => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { createSession } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({

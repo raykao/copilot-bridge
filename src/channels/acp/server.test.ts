@@ -86,7 +86,7 @@ describe('createAcpServer', () => {
       abort: async () => {},
       disconnect: async () => {},
     } as unknown as CopilotSession;
-    fakeBridge = { createSession: async () => fakeSession } as unknown as CopilotBridge;
+    fakeBridge = { createSession: async () => fakeSession, getOrCreateBotSession: async () => fakeSession, forceResumeSession: async () => fakeSession } as unknown as CopilotBridge;
     server = await createAcpServer({
       bind: '127.0.0.1',
       port: 0,

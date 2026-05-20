@@ -159,10 +159,8 @@ export class AcpConnectionHandler {
 
     let session: CopilotSession;
     try {
-      session = await this.bridge.createSession({
-        workingDirectory,
+      session = await this.bridge.getOrCreateBotSession(workingDirectory, agentName, {
         model,
-        agent: agentName,
         onPermissionRequest: this.makePermissionHandler(),
       });
     } catch (err) {
@@ -209,7 +207,7 @@ export class AcpConnectionHandler {
 
     let session: CopilotSession;
     try {
-      session = await this.bridge.resumeSession(params.sessionId, {
+      session = await this.bridge.forceResumeSession(params.sessionId, {
         workingDirectory,
         agent: agentName,
         onPermissionRequest: this.makePermissionHandler(),

@@ -32,6 +32,7 @@ type UserInputHandler = (
 export class CopilotBridge {
   private client: CopilotClient;
   private sessions = new Map<string, CopilotSession>();
+  private readonly botSessionRegistry = new Map<string, string>();
   private started = false;
   private lifecycleUnsubscribe?: () => void;
 
@@ -164,6 +165,61 @@ export class CopilotBridge {
       ...(opts?.infiniteSessions ? { infiniteSessions: { enabled: true } } : { infiniteSessions: { enabled: false } }),
     });
     this.sessions.set(session.sessionId, session);
+    return session;
+  }
+
+  // Forces a CLI session.resume RPC even if the session is in the in-memory cache.
+  // This re-arms the CLI's wireSessionStoreTracking for the given session,
+  // ensuring subsequent prompts produce turn rows in session-store.
+  async forceResumeSession(
+    sessionId: string,
+    opts?: Parameters<CopilotBridge['resumeSession']>[1],
+  ): Promise<CopilotSession> {
+    this.sessions.delete(sessionId);
+    return this.resumeSession(sessionId, opts);
+  }
+
+  // Returns the long-lived CLI session for a bot identified by workingDirectory+agent.
+  // Reuses the existing session if one exists (preventing competing CLI session.create calls
+  // that would kill other sessions' wireSessionStoreTracking hooks).
+  // On first call: creates a new CLI session and registers it.
+  // On subsequent calls (in-cache): returns the cached session directly.
+  // On subsequent calls (evicted from cache, e.g., after bridge restart): force-resumes from session-store.
+  async getOrCreateBotSession(
+    workingDirectory: string,
+    agent: string | undefined,
+    opts: {
+      model?: string;
+      onPermissionRequest: PermissionHandler;
+      onUserInputRequest?: UserInputHandler;
+    },
+  ): Promise<CopilotSession> {
+    const key = `${workingDirectory}:${agent ?? ''}`;
+    const existingId = this.botSessionRegistry.get(key);
+    if (existingId) {
+      const existing = this.sessions.get(existingId);
+      if (existing) {
+        existing.registerPermissionHandler(opts.onPermissionRequest);
+        return existing;
+      }
+      // Session was evicted from cache (e.g., bridge restart). Force-resume from CLI.
+      const resumed = await this.forceResumeSession(existingId, {
+        workingDirectory,
+        agent,
+        onPermissionRequest: opts.onPermissionRequest,
+        onUserInputRequest: opts.onUserInputRequest,
+      });
+      return resumed;
+    }
+    // No existing session for this bot. Create a new one and register it.
+    const session = await this.createSession({
+      workingDirectory,
+      agent,
+      model: opts.model,
+      onPermissionRequest: opts.onPermissionRequest,
+      onUserInputRequest: opts.onUserInputRequest,
+    });
+    this.botSessionRegistry.set(key, session.sessionId);
     return session;
   }
 
