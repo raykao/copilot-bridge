@@ -112,9 +112,10 @@ export class AcpConnectionHandler {
     }
 
     this.pendingPermissions.delete(String(msg.id));
-    const decision = msg.result !== undefined
+    const rawDecision = msg.result !== undefined
       ? ((msg.result as SessionRequestPermissionResult)?.decision ?? 'unknown')
       : 'error';
+    const decision = rawDecision === 'deny' ? 'reject' : rawDecision;
     log.info(`permission_resume_received wsReqId=${msg.id} decision=${decision}`);
     if (msg.result !== undefined) {
       pending.resolve(this.toPermissionResult(msg.result as SessionRequestPermissionResult));
@@ -191,8 +192,8 @@ export class AcpConnectionHandler {
     const params = (msg.params ?? {}) as { sessionId: string };
     const existing = this.sessions.get(params.sessionId);
     if (existing) {
-      this.sendResponse(msg.id, { sessionId: params.sessionId });
       log.info(`session_resume_cached acpSessionId=${params.sessionId}`);
+      this.sendResponse(msg.id, { sessionId: params.sessionId });
       return;
     }
 

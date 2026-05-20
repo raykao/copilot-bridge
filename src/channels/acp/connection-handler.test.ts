@@ -364,6 +364,45 @@ describe('AcpConnectionHandler', () => {
     await sessionNewPromise;
   });
 
+  it('permission response logs deny decision as reject', async () => {
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const sent: SentMessage[] = [];
+    let permissionPromise: Promise<PermissionRequestResult> | undefined;
+    const session = fakeSession();
+    const createSession = vi.fn(async (opts: CreateSessionOptions) => {
+      permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
+      return session as unknown as CopilotSession;
+    });
+    const bridge = { createSession } as unknown as CopilotBridge;
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+
+    const sessionNewPromise = handler.handle(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'session/new',
+      params: {},
+    }));
+
+    await vi.waitFor(() => {
+      expect(sent.some((msg) => msg.method === 'session/request_permission')).toBe(true);
+    });
+    const request = sent.find((msg) => msg.method === 'session/request_permission');
+    expect(request).toBeDefined();
+    const requestId = request?.id as string;
+    consoleLogSpy.mockClear();
+
+    await handler.handle(JSON.stringify({
+      jsonrpc: '2.0',
+      id: requestId,
+      result: { decision: 'deny' },
+    } satisfies JsonRpcResponse));
+
+    expect(consoleLogCallsContain(consoleLogSpy, `permission_resume_received wsReqId=${requestId} decision=reject`)).toBe(true);
+    expect(consoleLogCallsContain(consoleLogSpy, `permission_resume_received wsReqId=${requestId} decision=deny`)).toBe(false);
+    await expect(permissionPromise).resolves.toEqual({ kind: 'reject' });
+    await sessionNewPromise;
+  });
+
   it('permission request forwards full request details', async () => {
     const sent: SentMessage[] = [];
     const session = fakeSession();
