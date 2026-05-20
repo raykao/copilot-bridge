@@ -13,3 +13,17 @@
 C=Correctness, TS=Type safety, TC=Test coverage, CV=Conventions, CO=Completeness
 
 ## Notes
+
+## a9k.2 - session/get, list, subscribe, unsubscribe
+- Date: 2026-05-20
+- Implementer: GPT-5.5, commit 9ea28c8
+- Reviewer: Claude Sonnet 4.6
+- Scores: correctness=5, type_safety=5, test_coverage=5, conventions=5, completeness=5
+- PASS - merged as v0.15.1 (cd7448a)
+
+## a9k.3 - session/transcript
+- Date: 2026-05-20
+- Implementer: GPT-5.5, commit e8c533d
+- Reviewer: Claude Sonnet 4.6
+- Scores: correctness=5, type_safety=5, test_coverage=5, conventions=5, completeness=5
+- PASS - merged as v0.15.2 (3348d6e)
