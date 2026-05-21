@@ -27,3 +27,10 @@ C=Correctness, TS=Type safety, TC=Test coverage, CV=Conventions, CO=Completeness
 - Reviewer: Claude Sonnet 4.6
 - Scores: correctness=5, type_safety=5, test_coverage=5, conventions=5, completeness=5
 - PASS - merged as v0.15.2 (3348d6e)
+
+## a9k.6 - bridge permission policy pre-check + pendingPermissions[] in SessionState
+- Date: 2026-05-20
+- Implementer: GPT-5.5, commit a834d89
+- Reviewer: Claude Sonnet 4.6
+- Scores: correctness=5, safety=4, test_coverage=4, type_safety=4, spec_compliance=5
+- PASS - merged as v0.15.3 (2c422ea)
