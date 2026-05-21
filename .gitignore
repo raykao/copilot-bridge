@@ -10,3 +10,4 @@ config.json
 generated_imgs/
 AGENTS.local.md
 data/
+workbench/
