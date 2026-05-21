@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionEvent } from '@github/copilot-sdk';
-import { translateSdkEvent } from './sdk-event-translator.js';
+import { SdkEventTranslator } from './sdk-event-translator.js';
 
-describe('translateSdkEvent', () => {
+describe('SdkEventTranslator', () => {
+  const translateEvent = (event: SessionEvent) => new SdkEventTranslator().translate(event);
   it('maps assistant.streaming_delta to streaming with deltaContent', () => {
     const event = {
       id: 'a',
@@ -12,7 +13,7 @@ describe('translateSdkEvent', () => {
       data: { deltaContent: 'hello' },
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toEqual({ type: 'streaming', content: 'hello' });
+    expect(translateEvent(event)).toEqual({ type: 'streaming', content: 'hello' });
   });
 
   it('maps assistant.message_delta to streaming', () => {
@@ -24,7 +25,7 @@ describe('translateSdkEvent', () => {
       data: { deltaContent: 'world' },
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toEqual({ type: 'streaming', content: 'world' });
+    expect(translateEvent(event)).toEqual({ type: 'streaming', content: 'world' });
   });
 
   it('returns null for assistant.streaming_delta with empty content', () => {
@@ -36,7 +37,7 @@ describe('translateSdkEvent', () => {
       data: { deltaContent: '' },
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toBeNull();
+    expect(translateEvent(event)).toBeNull();
   });
 
   it('maps session.idle to completed with empty content', () => {
@@ -48,7 +49,7 @@ describe('translateSdkEvent', () => {
       data: {},
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toEqual({ type: 'completed', content: '' });
+    expect(translateEvent(event)).toEqual({ type: 'completed', content: '' });
   });
 
   it('maps agent_idle to completed with empty content', () => {
@@ -60,7 +61,7 @@ describe('translateSdkEvent', () => {
       data: {},
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toEqual({ type: 'completed', content: '' });
+    expect(translateEvent(event)).toEqual({ type: 'completed', content: '' });
   });
 
   it('maps session.error to error with message', () => {
@@ -72,7 +73,7 @@ describe('translateSdkEvent', () => {
       data: { message: 'kaboom' },
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toEqual({ type: 'error', content: 'kaboom' });
+    expect(translateEvent(event)).toEqual({ type: 'error', content: 'kaboom' });
   });
 
   it('falls back to data.error for session.error when message missing', () => {
@@ -84,7 +85,7 @@ describe('translateSdkEvent', () => {
       data: { error: 'oops' },
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toEqual({ type: 'error', content: 'oops' });
+    expect(translateEvent(event)).toEqual({ type: 'error', content: 'oops' });
   });
 
   it('uses default text for session.error with no message or error', () => {
@@ -96,7 +97,7 @@ describe('translateSdkEvent', () => {
       data: {},
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toEqual({ type: 'error', content: 'session error' });
+    expect(translateEvent(event)).toEqual({ type: 'error', content: 'session error' });
   });
 
   it('returns null for unmapped event types', () => {
@@ -108,7 +109,7 @@ describe('translateSdkEvent', () => {
       data: {},
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toBeNull();
+    expect(translateEvent(event)).toBeNull();
   });
 
   it('returns null for assistant.message (suppressed in favor of idle)', () => {
@@ -120,7 +121,7 @@ describe('translateSdkEvent', () => {
       data: { content: 'final text' },
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toBeNull();
+    expect(translateEvent(event)).toBeNull();
   });
 
   it('maps tool.execution_start to tool_start with toolCallId, toolName, and arguments', () => {
@@ -136,7 +137,7 @@ describe('translateSdkEvent', () => {
       },
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toEqual({
+    expect(translateEvent(event)).toEqual({
       type: 'tool_start',
       toolCallId: 'tc-001',
       toolName: 'bash',
@@ -153,12 +154,20 @@ describe('translateSdkEvent', () => {
       data: { toolCallId: 'tc-002', toolName: 'view' },
     } as unknown as SessionEvent;
 
-    const result = translateSdkEvent(event);
+    const result = translateEvent(event);
     expect(result).not.toBeNull();
     expect((result as { arguments: unknown }).arguments).toEqual({});
   });
 
   it('maps tool.execution_complete (success) to tool_complete using detailedContent', () => {
+    const translator = new SdkEventTranslator();
+    translator.translate({
+      id: 'a',
+      timestamp: '2026-01-01T00:00:00Z',
+      parentId: null,
+      type: 'tool.execution_start',
+      data: { toolCallId: 'tc-001', toolName: 'bash' },
+    } as unknown as SessionEvent);
     const event = {
       id: 'a',
       timestamp: '2026-01-01T00:00:00Z',
@@ -166,13 +175,12 @@ describe('translateSdkEvent', () => {
       type: 'tool.execution_complete',
       data: {
         toolCallId: 'tc-001',
-        toolName: 'bash',
         success: true,
         result: { content: 'short', detailedContent: 'full output here' },
       },
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toEqual({
+    expect(translator.translate(event)).toEqual({
       type: 'tool_complete',
       toolCallId: 'tc-001',
       toolName: 'bash',
@@ -190,18 +198,25 @@ describe('translateSdkEvent', () => {
       type: 'tool.execution_complete',
       data: {
         toolCallId: 'tc-003',
-        toolName: 'view',
         success: true,
         result: { content: 'file contents here' },
       },
     } as unknown as SessionEvent;
 
-    const result = translateSdkEvent(event);
+    const result = translateEvent(event);
     expect(result).not.toBeNull();
     expect((result as { output: string }).output).toBe('file contents here');
   });
 
   it('maps tool.execution_complete (failure) with error.message to error field', () => {
+    const translator = new SdkEventTranslator();
+    translator.translate({
+      id: 'a',
+      timestamp: '2026-01-01T00:00:00Z',
+      parentId: null,
+      type: 'tool.execution_start',
+      data: { toolCallId: 'tc-004', toolName: 'bash' },
+    } as unknown as SessionEvent);
     const event = {
       id: 'a',
       timestamp: '2026-01-01T00:00:00Z',
@@ -209,14 +224,13 @@ describe('translateSdkEvent', () => {
       type: 'tool.execution_complete',
       data: {
         toolCallId: 'tc-004',
-        toolName: 'bash',
         success: false,
         result: { content: '' },
         error: { message: 'command not found' },
       },
     } as unknown as SessionEvent;
 
-    expect(translateSdkEvent(event)).toEqual({
+    expect(translator.translate(event)).toEqual({
       type: 'tool_complete',
       toolCallId: 'tc-004',
       toolName: 'bash',
@@ -234,12 +248,11 @@ describe('translateSdkEvent', () => {
       type: 'tool.execution_complete',
       data: {
         toolCallId: 'tc-005',
-        toolName: 'bash',
         success: false,
       },
     } as unknown as SessionEvent;
 
-    const result = translateSdkEvent(event);
+    const result = translateEvent(event);
     expect(result).not.toBeNull();
     expect((result as { error: string }).error).toBe('Tool failed');
   });
@@ -252,13 +265,12 @@ describe('translateSdkEvent', () => {
       type: 'tool.execution_complete',
       data: {
         toolCallId: 'tc-006',
-        toolName: 'view',
         success: true,
         result: { content: 'ok' },
       },
     } as unknown as SessionEvent;
 
-    const result = translateSdkEvent(event);
+    const result = translateEvent(event);
     expect(result).not.toBeNull();
     expect((result as { error: unknown }).error).toBeUndefined();
   });

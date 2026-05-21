@@ -28,7 +28,7 @@ import type {
   Turn,
 } from './types.js';
 import type { SessionState } from '../../core/session-types.js';
-import { translateSdkEvent } from './sdk-event-translator.js';
+import { SdkEventTranslator } from './sdk-event-translator.js';
 import type {
   CopilotSession,
   PermissionRequest,
@@ -42,7 +42,7 @@ import { getTracer, propagation, otelContext, SpanStatusCode, trace } from '../.
 
 const log = createLogger('acp-connection');
 
-interface SessionEntry { session: CopilotSession; unsubscribe: () => void; }
+interface SessionEntry { session: CopilotSession; unsubscribe: () => void; translator: SdkEventTranslator; }
 interface PendingPermission { resolve: (result: PermissionRequestResult) => void; reject: (err: Error) => void; sessionId: string; }
 
 export class AcpConnectionHandler {
@@ -209,8 +209,9 @@ export class AcpConnectionHandler {
           return;
         }
 
+        const translator = new SdkEventTranslator();
         const unsubscribe = session.on((event: SessionEvent) => {
-          const translated = translateSdkEvent(event);
+          const translated = translator.translate(event);
           if (translated) {
             log.debug(`session_update acpSessionId=${session.sessionId} kind=${(translated as { type?: string })?.type ?? 'unknown'}`);
             const updateCarrier: Record<string, string> = {};
@@ -231,7 +232,7 @@ export class AcpConnectionHandler {
             this.bridge.setSessionStatus(session.sessionId, 'error');
           }
         });
-        this.sessions.set(session.sessionId, { session, unsubscribe });
+        this.sessions.set(session.sessionId, { session, unsubscribe, translator });
 
         const result: SessionNewResult = { sessionId: session.sessionId };
         log.info(`session_open acpSessionId=${session.sessionId} agent=${agentName ?? 'AGENTS.md'} model=${model ?? 'default'}`);
@@ -278,8 +279,9 @@ export class AcpConnectionHandler {
       return;
     }
 
+    const translator = new SdkEventTranslator();
     const unsubscribe = session.on((event: SessionEvent) => {
-      const translated = translateSdkEvent(event);
+      const translated = translator.translate(event);
       if (translated) {
         log.debug(`session_update acpSessionId=${session.sessionId} kind=${(translated as { type?: string })?.type ?? 'unknown'}`);
         const updateCarrier: Record<string, string> = {};
@@ -300,7 +302,7 @@ export class AcpConnectionHandler {
         this.bridge.setSessionStatus(session.sessionId, 'error');
       }
     });
-    this.sessions.set(session.sessionId, { session, unsubscribe });
+    this.sessions.set(session.sessionId, { session, unsubscribe, translator });
 
     log.info(`session_resume acpSessionId=${session.sessionId} agent=${agentName ?? 'AGENTS.md'}`);
     this.sendResponse(msg.id, { sessionId: session.sessionId });
