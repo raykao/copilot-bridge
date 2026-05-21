@@ -1,0 +1,12 @@
+# Local OTel development stack - Jaeger all-in-one with OTLP receiver
+# Usage: docker compose -f docker-compose.otel.yml up -d
+# Jaeger UI: http://localhost:16686
+# OTLP HTTP endpoint: http://localhost:4318
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "4318:4318"
