@@ -9,6 +9,7 @@ export interface JsonRpcRequest {
   method: string;
   id: string | number;
   params?: unknown;
+  traceparent?: string;
 }
 
 export interface JsonRpcNotification {
@@ -16,6 +17,7 @@ export interface JsonRpcNotification {
   method: string;
   // no id field
   params?: unknown;
+  traceparent?: string;
 }
 
 export interface JsonRpcResponse {
@@ -23,6 +25,7 @@ export interface JsonRpcResponse {
   id: string | number;
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
+  traceparent?: string;
 }
 
 // Union for anything arriving from the client
