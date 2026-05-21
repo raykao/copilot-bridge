@@ -25,6 +25,14 @@ export async function initTelemetry(): Promise<void> {
   });
 
   sdk.start();
-  process.on('SIGTERM', () => { void sdk.shutdown(); });
-  process.on('SIGINT', () => { void sdk.shutdown(); });
+  // Shutdown with a 5-second timeout so a missing/unreachable collector cannot
+  // delay process exit. The SDK default is 30 seconds which is too long.
+  const shutdownWithTimeout = (): void => {
+    void Promise.race([
+      sdk.shutdown(),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  };
+  process.on('SIGTERM', shutdownWithTimeout);
+  process.on('SIGINT', shutdownWithTimeout);
 }
