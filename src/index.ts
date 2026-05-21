@@ -20,6 +20,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
 import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig } from './types.js';
+import { initTelemetry } from './telemetry.js';
 
 const log = createLogger('bridge');
 const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
@@ -367,6 +368,7 @@ function resolveTelemetryConfig(config: AppConfig): { telemetry?: import('@githu
 }
 
 async function main(): Promise<void> {
+  await initTelemetry();
   // Initialize log file early so startup output is captured
   // (uses defaults until config is loaded)
   const logPath = path.join(os.homedir(), '.copilot-bridge', 'copilot-bridge.log');

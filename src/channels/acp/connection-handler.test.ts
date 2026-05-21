@@ -9,6 +9,15 @@ import type { StoredTurn } from '../../core/session-store-reader.js';
 import { AcpConnectionHandler } from './connection-handler.js';
 import { loadConfig, _resetConfigForTest } from '../../config.js';
 
+const { mockSpan, mockTracer, mockPropagationInject, mockPropagationExtract } = vi.hoisted(() => {
+  const mockSpan = { setAttribute: vi.fn(), setStatus: vi.fn(), end: vi.fn() };
+  const mockTracer = { startSpan: vi.fn(() => mockSpan) };
+  const mockPropagationInject = vi.fn((_ctx: unknown, carrier: Record<string, string>) => { carrier['traceparent'] = '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01'; });
+  const mockPropagationExtract = vi.fn((_ctx: unknown, _carrier: unknown) => _ctx);
+  return { mockSpan, mockTracer, mockPropagationInject, mockPropagationExtract };
+});
+vi.mock('../../telemetry.js', () => ({ getTracer: () => mockTracer, propagation: { inject: mockPropagationInject, extract: mockPropagationExtract }, otelContext: { active: vi.fn(() => ({})), with: vi.fn((_ctx: unknown, fn: () => unknown) => fn()) }, SpanStatusCode: { ERROR: 2, OK: 1, UNSET: 0 }, trace: { setSpan: vi.fn((ctx: unknown) => ctx) } }));
+
 
 const permissionConfigPath = 'scratch-acp-connection-handler-config.json';
 
@@ -26,6 +35,12 @@ beforeEach(() => {
     permissions: {},
   }));
   loadConfig(permissionConfigPath);
+  mockSpan.setAttribute.mockClear();
+  mockSpan.setStatus.mockClear();
+  mockSpan.end.mockClear();
+  mockTracer.startSpan.mockClear();
+  mockPropagationInject.mockClear();
+  mockPropagationExtract.mockClear();
 });
 
 afterEach(() => {
@@ -301,11 +316,11 @@ describe('AcpConnectionHandler', () => {
     }));
 
     expect(session.send).toHaveBeenCalledWith({ prompt: 'hello' });
-    expect(sent).toContainEqual({
+    expect(sent).toContainEqual(expect.objectContaining({
       jsonrpc: '2.0',
       method: 'session/update',
       params: { sessionId: 's1', type: 'completed', content: '' },
-    });
+    }));
     expect(sent).toContainEqual({ jsonrpc: '2.0', id: 2, result: { stopReason: 'idle' } });
   });
 
@@ -330,11 +345,11 @@ describe('AcpConnectionHandler', () => {
       data: { deltaContent: 'hi' },
     } as unknown as SessionEvent);
 
-    expect(sent).toContainEqual({
+    expect(sent).toContainEqual(expect.objectContaining({
       jsonrpc: '2.0',
       method: 'session/update',
       params: { sessionId: 's1', type: 'streaming', content: 'hi' },
-    });
+    }));
   });
 
   it('forces bridge resume when sessionId is not in the in-memory map', async () => {
@@ -370,11 +385,11 @@ describe('AcpConnectionHandler', () => {
       data: { deltaContent: 'resumed' },
     } as unknown as SessionEvent);
 
-    expect(sent).toContainEqual({
+    expect(sent).toContainEqual(expect.objectContaining({
       jsonrpc: '2.0',
       method: 'session/update',
       params: { sessionId: 'persisted-session', type: 'streaming', content: 'resumed' },
-    });
+    }));
   });
 
   it('permission request parks and resolves on response', async () => {
@@ -909,6 +924,107 @@ describe('AcpConnectionHandler', () => {
       await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '0.1', clientCapabilities: {} } }));
       await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 8, method: 'session/transcript', params: { sessionId: 's1', since: 5, limit: 50 } }));
       expect(bridge.getSessionTranscript).toHaveBeenCalledWith('s1', 5, 50);
+    });
+  });
+
+  describe('OTel instrumentation', () => {
+    it('starts acp.session.new span on session/new', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession();
+      const { bridge } = bridgeWithSession(session);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'session/new', params: {} }));
+
+      expect(mockTracer.startSpan.mock.calls.some((call) => call[0] === 'acp.session.new')).toBe(true);
+      expect(mockSpan.end).toHaveBeenCalledOnce();
+    });
+
+    it('starts acp.session.prompt span on session/prompt', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession({
+        on: vi.fn((handler: SessionHandler) => {
+          handler({ type: 'session.idle' } as SessionEvent);
+          return vi.fn();
+        }),
+      });
+      const { bridge } = bridgeWithSession(session);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'session/new', params: {} }));
+      const sessionId = (sent.find((msg) => msg.id === 1)?.result as { sessionId: string }).sessionId;
+      mockSpan.setAttribute.mockClear();
+      mockSpan.end.mockClear();
+      mockTracer.startSpan.mockClear();
+
+      await handler.handle(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'session/prompt',
+        params: { sessionId, prompt: 'hello' },
+      }));
+
+      expect(mockTracer.startSpan.mock.calls.some((call) => call[0] === 'acp.session.prompt')).toBe(true);
+      expect(mockSpan.setAttribute).toHaveBeenCalledWith('acp.session_id', sessionId);
+      expect(mockSpan.end).toHaveBeenCalled();
+    });
+
+    it('extracts traceparent from session/prompt envelope', async () => {
+      const sent: SentMessage[] = [];
+      const session = fakeSession({
+        on: vi.fn((handler: SessionHandler) => {
+          handler({ type: 'session.idle' } as SessionEvent);
+          return vi.fn();
+        }),
+      });
+      const { bridge } = bridgeWithSession(session);
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+      await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'session/new', params: {} }));
+      const sessionId = (sent.find((msg) => msg.id === 1)?.result as { sessionId: string }).sessionId;
+      mockPropagationExtract.mockClear();
+
+      await handler.handle(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'session/prompt',
+        params: { sessionId, prompt: 'hi' },
+        traceparent: '00-abc-def-01',
+      }));
+
+      expect(mockPropagationExtract.mock.calls.some((call) => JSON.stringify(call[1]) === JSON.stringify({ traceparent: '00-abc-def-01' }))).toBe(true);
+    });
+
+    it('injects traceparent into outbound session/request_permission', async () => {
+      const sent: SentMessage[] = [];
+      let permissionPromise: Promise<PermissionRequestResult> | undefined;
+      const session = fakeSession();
+      const getOrCreateBotSession = vi.fn(async (_workingDirectory: string, _agent: string | undefined, opts: BotSessionOptions) => {
+        permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
+        return session as unknown as CopilotSession;
+      });
+      const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn(), addPendingPermission: vi.fn(), removePendingPermission: vi.fn() } as unknown as CopilotBridge;
+      const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+
+      const sessionNewPromise = handler.handle(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'session/new',
+        params: {},
+      }));
+
+      await vi.waitFor(() => {
+        expect(sent.some((msg) => msg.method === 'session/request_permission')).toBe(true);
+      });
+      const request = sent.find((msg) => msg.method === 'session/request_permission');
+      expect(request).toBeDefined();
+      expect(request?.traceparent).toBe('00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01');
+
+      await handler.handle(JSON.stringify({
+        jsonrpc: '2.0',
+        id: request?.id as string,
+        result: { decision: 'allow' },
+      } satisfies JsonRpcResponse));
+      await expect(permissionPromise).resolves.toEqual({ kind: 'approve-once' });
+      await sessionNewPromise;
     });
   });
 
