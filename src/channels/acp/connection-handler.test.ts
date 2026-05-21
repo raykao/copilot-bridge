@@ -16,7 +16,7 @@ const { mockSpan, mockTracer, mockPropagationInject, mockPropagationExtract } = 
   const mockPropagationExtract = vi.fn((_ctx: unknown, _carrier: unknown) => _ctx);
   return { mockSpan, mockTracer, mockPropagationInject, mockPropagationExtract };
 });
-vi.mock('../../telemetry.js', () => ({ getTracer: () => mockTracer, propagation: { inject: mockPropagationInject, extract: mockPropagationExtract }, otelContext: { active: vi.fn(() => ({})), with: vi.fn((_ctx: unknown, fn: () => unknown) => fn()) }, SpanStatusCode: { ERROR: 2, OK: 1, UNSET: 0 } }));
+vi.mock('../../telemetry.js', () => ({ getTracer: () => mockTracer, propagation: { inject: mockPropagationInject, extract: mockPropagationExtract }, otelContext: { active: vi.fn(() => ({})), with: vi.fn((_ctx: unknown, fn: () => unknown) => fn()) }, SpanStatusCode: { ERROR: 2, OK: 1, UNSET: 0 }, trace: { setSpan: vi.fn((ctx: unknown) => ctx) } }));
 
 
 const permissionConfigPath = 'scratch-acp-connection-handler-config.json';

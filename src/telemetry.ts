@@ -1,6 +1,6 @@
 import { trace, propagation, context as otelContext, SpanStatusCode } from '@opentelemetry/api';
 
-export { propagation, otelContext, SpanStatusCode };
+export { trace, propagation, otelContext, SpanStatusCode };
 
 export function getTracer() {
   return trace.getTracer('copilot-bridge');

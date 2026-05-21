@@ -38,7 +38,7 @@ import type {
 import { createLogger } from '../../logger.js';
 import { buildCustomAgents } from '../../core/session-manager.js';
 import { evaluateConfigPermissions } from '../../config.js';
-import { getTracer, propagation, otelContext, SpanStatusCode } from '../../telemetry.js';
+import { getTracer, propagation, otelContext, SpanStatusCode, trace } from '../../telemetry.js';
 
 const log = createLogger('acp-connection');
 
@@ -181,61 +181,63 @@ export class AcpConnectionHandler {
       ? propagation.extract(otelContext.active(), { traceparent: msg.traceparent })
       : otelContext.active();
     const span = this.tracer.startSpan('acp.session.new', undefined, parentCtx);
+    const activeCtx = trace.setSpan(parentCtx, span);
     try {
-      const params = (msg.params ?? {}) as SessionNewParams;
-      const workingDirectory = this.botCfg.workingDirectory ?? process.cwd();
-      const model = params.model ?? this.botCfg.model;
-      let agentName: string | undefined = this.botCfg.agent;
+      await otelContext.with(activeCtx, async () => {
+        const params = (msg.params ?? {}) as SessionNewParams;
+        const workingDirectory = this.botCfg.workingDirectory ?? process.cwd();
+        const model = params.model ?? this.botCfg.model;
+        let agentName: string | undefined = this.botCfg.agent;
 
-      if (agentName) {
-        const customAgents = buildCustomAgents(workingDirectory);
-        if (!customAgents.some(a => a.name === agentName)) {
-          log.warn(`Agent "${agentName}" has no definition in ${workingDirectory}, falling back to AGENTS.md`);
-          agentName = undefined;
+        if (agentName) {
+          const customAgents = buildCustomAgents(workingDirectory);
+          if (!customAgents.some(a => a.name === agentName)) {
+            log.warn(`Agent "${agentName}" has no definition in ${workingDirectory}, falling back to AGENTS.md`);
+            agentName = undefined;
+          }
         }
-      }
 
-      let session: CopilotSession;
-      try {
-        session = await this.bridge.getOrCreateBotSession(workingDirectory, agentName, {
-          model,
-          onPermissionRequest: this.makePermissionHandler(),
-        });
-      } catch (err) {
-        log.warn(`session_open_failed agent=${agentName ?? 'AGENTS.md'} error=${errorMessage(err)}`);
-        this.sendError(msg.id, -32603, `Failed to create session: ${errorMessage(err)}`);
-        span.end();
-        return;
-      }
-
-      const unsubscribe = session.on((event: SessionEvent) => {
-        const translated = translateSdkEvent(event);
-        if (translated) {
-          log.debug(`session_update acpSessionId=${session.sessionId} kind=${(translated as { type?: string })?.type ?? 'unknown'}`);
-          const updateCarrier: Record<string, string> = {};
-          propagation.inject(otelContext.active(), updateCarrier);
-          this.send({
-            jsonrpc: '2.0',
-            method: 'session/update',
-            params: { sessionId: session.sessionId, ...translated },
-            ...(updateCarrier.traceparent ? { traceparent: updateCarrier.traceparent } : {}),
+        let session: CopilotSession;
+        try {
+          session = await this.bridge.getOrCreateBotSession(workingDirectory, agentName, {
+            model,
+            onPermissionRequest: this.makePermissionHandler(),
           });
+        } catch (err) {
+          log.warn(`session_open_failed agent=${agentName ?? 'AGENTS.md'} error=${errorMessage(err)}`);
+          this.sendError(msg.id, -32603, `Failed to create session: ${errorMessage(err)}`);
+          return;
         }
-        const eventType: string = event.type;
-        if (eventType === 'session.in_progress') {
-          this.bridge.setSessionStatus(session.sessionId, 'in_progress');
-        } else if (eventType === 'session.idle' || eventType === 'agent_idle') {
-          this.bridge.setSessionStatus(session.sessionId, 'idle');
-        } else if (eventType === 'session.error') {
-          this.bridge.setSessionStatus(session.sessionId, 'error');
-        }
-      });
-      this.sessions.set(session.sessionId, { session, unsubscribe });
 
-      const result: SessionNewResult = { sessionId: session.sessionId };
-      log.info(`session_open acpSessionId=${session.sessionId} agent=${agentName ?? 'AGENTS.md'} model=${model ?? 'default'}`);
-      this.sendResponse(msg.id, result);
-      this.bridge.setSessionStatus(session.sessionId, 'idle');
+        const unsubscribe = session.on((event: SessionEvent) => {
+          const translated = translateSdkEvent(event);
+          if (translated) {
+            log.debug(`session_update acpSessionId=${session.sessionId} kind=${(translated as { type?: string })?.type ?? 'unknown'}`);
+            const updateCarrier: Record<string, string> = {};
+            propagation.inject(otelContext.active(), updateCarrier);
+            this.send({
+              jsonrpc: '2.0',
+              method: 'session/update',
+              params: { sessionId: session.sessionId, ...translated },
+              ...(updateCarrier.traceparent ? { traceparent: updateCarrier.traceparent } : {}),
+            });
+          }
+          const eventType: string = event.type;
+          if (eventType === 'session.in_progress') {
+            this.bridge.setSessionStatus(session.sessionId, 'in_progress');
+          } else if (eventType === 'session.idle' || eventType === 'agent_idle') {
+            this.bridge.setSessionStatus(session.sessionId, 'idle');
+          } else if (eventType === 'session.error') {
+            this.bridge.setSessionStatus(session.sessionId, 'error');
+          }
+        });
+        this.sessions.set(session.sessionId, { session, unsubscribe });
+
+        const result: SessionNewResult = { sessionId: session.sessionId };
+        log.info(`session_open acpSessionId=${session.sessionId} agent=${agentName ?? 'AGENTS.md'} model=${model ?? 'default'}`);
+        this.sendResponse(msg.id, result);
+        this.bridge.setSessionStatus(session.sessionId, 'idle');
+      });
       span.end();
     } catch (err) {
       span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) });
@@ -365,42 +367,46 @@ export class AcpConnectionHandler {
       : otelContext.active();
     const span = this.tracer.startSpan('acp.session.prompt', undefined, parentCtx);
     span.setAttribute('acp.session_id', (msg.params as { sessionId?: string })?.sessionId ?? 'unknown');
+    const activeCtx = trace.setSpan(parentCtx, span);
+    let stopReason = 'idle' as SessionPromptResult['stopReason'];
     try {
-      const params = msg.params as SessionPromptParams;
-      const entry = this.sessions.get(params.sessionId);
-      if (!entry) {
-        this.sendError(msg.id, -32603, 'Session not found');
-        span.end();
-        return;
-      }
+      await otelContext.with(activeCtx, async () => {
+        const params = msg.params as SessionPromptParams;
+        const entry = this.sessions.get(params.sessionId);
+        if (!entry) {
+          this.sendError(msg.id, -32603, 'Session not found');
+          return;
+        }
 
-      let stopReason: SessionPromptResult['stopReason'] = 'idle';
-      let unsubscribeIdle = (): void => {};
-      const idlePromise = new Promise<void>((resolve) => {
-        unsubscribeIdle = entry.session.on((event: SessionEvent) => {
-          if (event.type === 'session.idle') {
-            unsubscribeIdle();
-            resolve();
-          } else if (event.type === 'session.error') {
-            stopReason = 'error';
-            unsubscribeIdle();
-            resolve();
-          }
+        let unsubscribeIdle = (): void => {};
+        const idlePromise = new Promise<void>((resolve) => {
+          unsubscribeIdle = entry.session.on((event: SessionEvent) => {
+            if (event.type === 'session.idle') {
+              unsubscribeIdle();
+              resolve();
+            } else if (event.type === 'session.error') {
+              stopReason = 'error';
+              unsubscribeIdle();
+              resolve();
+            }
+          });
         });
+
+        try {
+          await entry.session.send({ prompt: params.prompt });
+        } catch (err) {
+          unsubscribeIdle();
+          this.sendError(msg.id, -32603, `send failed: ${errorMessage(err)}`);
+          return;
+        }
+
+        await idlePromise;
+        const result: SessionPromptResult = { stopReason };
+        this.sendResponse(msg.id, result);
       });
-
-      try {
-        await entry.session.send({ prompt: params.prompt });
-      } catch (err) {
-        unsubscribeIdle();
-        this.sendError(msg.id, -32603, `send failed: ${errorMessage(err)}`);
-        span.end();
-        return;
+      if (stopReason === 'error') {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: 'session.error' });
       }
-
-      await idlePromise;
-      const result: SessionPromptResult = { stopReason };
-      this.sendResponse(msg.id, result);
       span.end();
     } catch (err) {
       span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) });
