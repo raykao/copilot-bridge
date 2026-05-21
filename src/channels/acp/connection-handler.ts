@@ -37,11 +37,12 @@ import type {
 } from '@github/copilot-sdk';
 import { createLogger } from '../../logger.js';
 import { buildCustomAgents } from '../../core/session-manager.js';
+import { evaluateConfigPermissions } from '../../config.js';
 
 const log = createLogger('acp-connection');
 
 interface SessionEntry { session: CopilotSession; unsubscribe: () => void; }
-interface PendingPermission { resolve: (result: PermissionRequestResult) => void; reject: (err: Error) => void; }
+interface PendingPermission { resolve: (result: PermissionRequestResult) => void; reject: (err: Error) => void; sessionId: string; }
 
 export class AcpConnectionHandler {
   private readonly sessions = new Map<string, SessionEntry>();
@@ -140,6 +141,8 @@ export class AcpConnectionHandler {
     }
 
     this.pendingPermissions.delete(String(msg.id));
+    const sessionId = pending.sessionId;
+    this.bridge.removePendingPermission(sessionId, String(msg.id));
     const rawDecision = msg.result !== undefined
       ? ((msg.result as SessionRequestPermissionResult)?.decision ?? 'unknown')
       : 'error';
@@ -287,6 +290,19 @@ export class AcpConnectionHandler {
     invocation: { sessionId: string },
   ) => Promise<PermissionRequestResult> {
     return async (request, invocation) => {
+      const workingDirectory = this.botCfg.workingDirectory ?? process.cwd();
+      const policyDecision = evaluateConfigPermissions(request as Record<string, unknown> & { kind: string }, workingDirectory);
+
+      if (policyDecision === 'allow') {
+        log.info(`request_permission_policy_allow acpSessionId=${invocation.sessionId} kind=${request.kind}`);
+        return { kind: 'approve-once' };
+      }
+
+      if (policyDecision === 'deny') {
+        log.info(`request_permission_policy_deny acpSessionId=${invocation.sessionId} kind=${request.kind}`);
+        return { kind: 'reject' };
+      }
+
       const requestId = randomUUID();
       const params = {
         sessionId: invocation.sessionId,
@@ -294,6 +310,13 @@ export class AcpConnectionHandler {
         ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
         request,
       } satisfies SessionRequestPermissionParams;
+
+      this.bridge.addPendingPermission(invocation.sessionId, {
+        requestId,
+        kind: request.kind,
+        ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
+        requestedAt: new Date().toISOString(),
+      });
 
       this.send({
         jsonrpc: '2.0',
@@ -304,7 +327,11 @@ export class AcpConnectionHandler {
       log.info(`request_permission_sent acpSessionId=${invocation.sessionId} wsReqId=${requestId} kind=${request.kind}${request.toolCallId ? ` toolCallId=${request.toolCallId}` : ''}`);
 
       return new Promise<PermissionRequestResult>((resolve, reject) => {
-        this.pendingPermissions.set(requestId, { resolve, reject });
+        this.pendingPermissions.set(requestId, {
+          resolve,
+          reject,
+          sessionId: invocation.sessionId,
+        });
       });
     };
   }

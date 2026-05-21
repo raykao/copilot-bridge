@@ -19,7 +19,7 @@ import {
 } from '@github/copilot-sdk';
 import type { SessionHooks } from './hooks-loader.js';
 import type { BridgeProviderConfig } from '../types.js';
-import type { SessionStatus, SessionState } from './session-types.js';
+import type { SessionStatus, SessionState, PendingPermission } from './session-types.js';
 import { getCurrentTurnIndex, getTurns, sessionExistsInStore, type StoredTurn } from './session-store-reader.js';
 
 // Re-export SDK ProviderConfig under the old name for backward compat
@@ -39,6 +39,7 @@ export class CopilotBridge {
   private readonly sessionAgents = new Map<string, string | null>();
   private readonly sessionUpdatedAt = new Map<string, string>();
   private readonly sessionSubscribers = new Map<string, Set<(state: SessionState) => void>>();
+  private readonly sessionPendingPermissions = new Map<string, Map<string, PendingPermission>>();
   private started = false;
   private lifecycleUnsubscribe?: () => void;
 
@@ -267,7 +268,7 @@ export class CopilotBridge {
       agent: this.sessionAgents.get(id) ?? null,
       status: this.sessionStatuses.get(id) ?? 'unknown',
       currentTurnIndex: getCurrentTurnIndex(id),
-      pendingPermissions: [],
+      pendingPermissions: Array.from(this.sessionPendingPermissions.get(id)?.values() ?? []),
       updatedAt: this.sessionUpdatedAt.get(id) ?? new Date().toISOString(),
     };
   }
@@ -285,7 +286,7 @@ export class CopilotBridge {
         agent: this.sessionAgents.get(meta.sessionId) ?? null,
         status: this.sessionStatuses.get(meta.sessionId) ?? ('unknown' as SessionStatus),
         currentTurnIndex: getCurrentTurnIndex(meta.sessionId),
-        pendingPermissions: [],
+        pendingPermissions: Array.from(this.sessionPendingPermissions.get(meta.sessionId)?.values() ?? []),
         updatedAt: this.sessionUpdatedAt.get(meta.sessionId) ?? meta.modifiedTime.toISOString(),
       }))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -302,6 +303,24 @@ export class CopilotBridge {
 
   unsubscribeFromSession(sessionId: string, cb: (state: SessionState) => void): void {
     this.sessionSubscribers.get(sessionId)?.delete(cb);
+  }
+
+  addPendingPermission(sessionId: string, perm: PendingPermission): void {
+    let map = this.sessionPendingPermissions.get(sessionId);
+    if (!map) {
+      map = new Map<string, PendingPermission>();
+      this.sessionPendingPermissions.set(sessionId, map);
+    }
+    map.set(perm.requestId, perm);
+    this.notifySessionSubscribers(sessionId);
+  }
+
+  removePendingPermission(sessionId: string, requestId: string): void {
+    const map = this.sessionPendingPermissions.get(sessionId);
+    if (!map) return;
+    map.delete(requestId);
+    if (map.size === 0) this.sessionPendingPermissions.delete(sessionId);
+    this.notifySessionSubscribers(sessionId);
   }
 
   getSessionTranscript(

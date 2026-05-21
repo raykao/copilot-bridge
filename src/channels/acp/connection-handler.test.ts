@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
 import { CopilotBridge } from '../../core/bridge.js';
 import type { AcpBotConfig } from '../../types.js';
 import type { CopilotSession, PermissionHandler, PermissionRequestResult, SessionEvent } from '@github/copilot-sdk';
@@ -6,9 +7,35 @@ import type { JsonRpcResponse } from './types.js';
 import type { SessionState } from '../../core/session-types.js';
 import type { StoredTurn } from '../../core/session-store-reader.js';
 import { AcpConnectionHandler } from './connection-handler.js';
+import { loadConfig, _resetConfigForTest } from '../../config.js';
+
+
+const permissionConfigPath = 'scratch-acp-connection-handler-config.json';
+
+beforeEach(() => {
+  _resetConfigForTest();
+  fs.writeFileSync(permissionConfigPath, JSON.stringify({
+    platforms: {
+      mattermost: {
+        url: 'http://localhost:8065',
+        bots: { copilot: { token: 'test-token-123' } },
+      },
+    },
+    channels: [],
+    defaults: { model: 'claude-sonnet-4.6', triggerMode: 'mention' },
+    permissions: {},
+  }));
+  loadConfig(permissionConfigPath);
+});
+
+afterEach(() => {
+  _resetConfigForTest();
+  fs.rmSync(permissionConfigPath, { force: true });
+});
 
 type SentMessage = Record<string, unknown>;
 type SessionHandler = (event: SessionEvent) => void;
+type TestPermissionRequest = { kind: string; toolCallId?: string; fullCommandText?: string; intention?: string; path?: string };
 
 interface FakeSession {
   sessionId: string;
@@ -22,7 +49,7 @@ interface FakeSession {
 interface BotSessionOptions {
   model?: string;
   onPermissionRequest: (
-    request: { kind: 'shell'; toolCallId?: string; fullCommandText?: string; intention?: string },
+    request: TestPermissionRequest,
     invocation: { sessionId: string },
   ) => PermissionRequestResult | Promise<PermissionRequestResult>;
 }
@@ -36,7 +63,7 @@ interface ResumeSessionOptions {
   workingDirectory?: string;
   agent?: string;
   onPermissionRequest: (
-    request: { kind: 'shell'; toolCallId?: string; fullCommandText?: string; intention?: string },
+    request: TestPermissionRequest,
     invocation: { sessionId: string },
   ) => PermissionRequestResult | Promise<PermissionRequestResult>;
 }
@@ -73,6 +100,8 @@ function bridgeWithSession(session: FakeSession): {
   unsubscribeFromSession: ReturnType<typeof vi.fn>;
   getSessionTranscript: ReturnType<typeof vi.fn<(id: string, since: number, limit: number) => { turns: StoredTurn[]; hasMore: boolean; sessionFound: boolean }>>;
   setSessionStatus: ReturnType<typeof vi.fn>;
+  addPendingPermission: ReturnType<typeof vi.fn>;
+  removePendingPermission: ReturnType<typeof vi.fn>;
 } {
   const createSession = vi.fn(async (_opts: CreateSessionOptions) => session as unknown as CopilotSession);
   const resumeSession = vi.fn(async (_sessionId: string, _opts: ResumeSessionOptions) => session as unknown as CopilotSession);
@@ -88,8 +117,10 @@ function bridgeWithSession(session: FakeSession): {
     sessionFound: false,
   }));
   const setSessionStatus = vi.fn();
+  const addPendingPermission = vi.fn();
+  const removePendingPermission = vi.fn();
   return {
-    bridge: { createSession, resumeSession, getOrCreateBotSession, forceResumeSession, getSessionState, getAllSessionStates, subscribeToSession, unsubscribeFromSession, getSessionTranscript, setSessionStatus } as unknown as CopilotBridge,
+    bridge: { createSession, resumeSession, getOrCreateBotSession, forceResumeSession, getSessionState, getAllSessionStates, subscribeToSession, unsubscribeFromSession, getSessionTranscript, setSessionStatus, addPendingPermission, removePendingPermission } as unknown as CopilotBridge,
     createSession,
     resumeSession,
     getOrCreateBotSession,
@@ -100,6 +131,8 @@ function bridgeWithSession(session: FakeSession): {
     unsubscribeFromSession,
     getSessionTranscript,
     setSessionStatus,
+    addPendingPermission,
+    removePendingPermission,
   };
 }
 
@@ -352,7 +385,7 @@ describe('AcpConnectionHandler', () => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn(), addPendingPermission: vi.fn(), removePendingPermission: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -389,7 +422,7 @@ describe('AcpConnectionHandler', () => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn(), addPendingPermission: vi.fn(), removePendingPermission: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -425,7 +458,7 @@ describe('AcpConnectionHandler', () => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn(), addPendingPermission: vi.fn(), removePendingPermission: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -463,7 +496,7 @@ describe('AcpConnectionHandler', () => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn(), addPendingPermission: vi.fn(), removePendingPermission: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -504,7 +537,7 @@ describe('AcpConnectionHandler', () => {
       }, { sessionId: 's1' });
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn(), addPendingPermission: vi.fn(), removePendingPermission: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -545,7 +578,7 @@ describe('AcpConnectionHandler', () => {
       permissionPromise = Promise.resolve(opts.onPermissionRequest({ kind: 'shell' }, { sessionId: 's1' }));
       return session as unknown as CopilotSession;
     });
-    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn() } as unknown as CopilotBridge;
+    const bridge = { getOrCreateBotSession, setSessionStatus: vi.fn(), addPendingPermission: vi.fn(), removePendingPermission: vi.fn() } as unknown as CopilotBridge;
     const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
 
     const sessionNewPromise = handler.handle(JSON.stringify({
@@ -879,4 +912,161 @@ describe('AcpConnectionHandler', () => {
     });
   });
 
+});
+
+
+describe('AcpConnectionHandler - permission policy pre-check', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('auto-allows a request when evaluateConfigPermissions returns allow', async () => {
+    const sent: SentMessage[] = [];
+    const session = fakeSession();
+    let capturedHandler: ((request: TestPermissionRequest, invocation: { sessionId: string }) => Promise<PermissionRequestResult>) | undefined;
+
+    const { bridge } = bridgeWithSession(session);
+    (bridge.getOrCreateBotSession as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_wd: string, _agent: string | undefined, opts: BotSessionOptions) => {
+        capturedHandler = opts.onPermissionRequest;
+        return session as unknown as CopilotSession;
+      },
+    );
+    (bridge.getSessionState as ReturnType<typeof vi.fn>).mockReturnValue(defaultState());
+
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+    await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 'init', method: 'initialize', params: {} }));
+    await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 'new', method: 'session/new', params: {} }));
+
+    const result = await capturedHandler!({ kind: 'read', path: '/test/workspace/file.ts' }, { sessionId: 's1' });
+
+    expect(result).toEqual({ kind: 'approve-once' });
+    expect(sent.some((m) => m.method === 'session/request_permission')).toBe(false);
+    expect((bridge.addPendingPermission as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+  });
+
+  it('auto-denies a request when evaluateConfigPermissions returns deny via hardcoded deny rule', async () => {
+    const sent: SentMessage[] = [];
+    const session = fakeSession();
+    let capturedHandler: ((request: TestPermissionRequest, invocation: { sessionId: string }) => Promise<PermissionRequestResult>) | undefined;
+
+    const { bridge } = bridgeWithSession(session);
+    (bridge.getOrCreateBotSession as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_wd: string, _agent: string | undefined, opts: BotSessionOptions) => {
+        capturedHandler = opts.onPermissionRequest;
+        return session as unknown as CopilotSession;
+      },
+    );
+    (bridge.getSessionState as ReturnType<typeof vi.fn>).mockReturnValue(defaultState());
+
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+    await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 'init', method: 'initialize', params: {} }));
+    await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 'new', method: 'session/new', params: {} }));
+
+    const result = await capturedHandler!({ kind: 'shell', fullCommandText: 'rm -rf /' }, { sessionId: 's1' });
+
+    expect(result).toEqual({ kind: 'reject' });
+    expect(sent.some((m) => m.method === 'session/request_permission')).toBe(false);
+    expect((bridge.addPendingPermission as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+  });
+
+  it('forwards shell echo hello and calls addPendingPermission, then response calls removePendingPermission', async () => {
+    const sent: SentMessage[] = [];
+    const session = fakeSession();
+    let capturedHandler: ((request: TestPermissionRequest, invocation: { sessionId: string }) => Promise<PermissionRequestResult>) | undefined;
+
+    const { bridge } = bridgeWithSession(session);
+    (bridge.getOrCreateBotSession as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_wd: string, _agent: string | undefined, opts: BotSessionOptions) => {
+        capturedHandler = opts.onPermissionRequest;
+        return session as unknown as CopilotSession;
+      },
+    );
+    (bridge.getSessionState as ReturnType<typeof vi.fn>).mockReturnValue(defaultState());
+
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+    await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 'init', method: 'initialize', params: {} }));
+    await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 'new', method: 'session/new', params: {} }));
+
+    const permissionPromise = capturedHandler!({ kind: 'shell', fullCommandText: 'echo hello' }, { sessionId: 's1' });
+
+    const permRequest = sent.find((m) => m.method === 'session/request_permission');
+    expect(permRequest).toBeDefined();
+    expect((bridge.addPendingPermission as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect((bridge.addPendingPermission as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe('s1');
+    expect((bridge.addPendingPermission as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toMatchObject({ kind: 'shell' });
+
+    const requestId = permRequest?.id as string;
+    await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: requestId, result: { decision: 'allow' } }));
+
+    await expect(permissionPromise).resolves.toEqual({ kind: 'approve-once' });
+    expect((bridge.removePendingPermission as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect((bridge.removePendingPermission as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual(['s1', requestId]);
+  });
+});
+
+describe('AcpConnectionHandler - pendingPermissions in session state', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+
+
+  it('CopilotBridge stores pendingPermissions in session state and notifies subscribers', () => {
+    const bridge = Object.create(CopilotBridge.prototype) as CopilotBridge;
+    const bridgeInternals = bridge as unknown as {
+      sessionStatuses: Map<string, unknown>;
+      sessionAgents: Map<string, string | null>;
+      sessionUpdatedAt: Map<string, string>;
+      sessionSubscribers: Map<string, Set<(state: SessionState) => void>>;
+      sessionPendingPermissions: Map<string, Map<string, { requestId: string; kind: string; requestedAt: string }>>;
+    };
+    bridgeInternals.sessionStatuses = new Map([['s1', 'idle']]);
+    bridgeInternals.sessionAgents = new Map([['s1', 'bob']]);
+    bridgeInternals.sessionUpdatedAt = new Map([['s1', '2026-05-20T20:00:00.000Z']]);
+    bridgeInternals.sessionSubscribers = new Map();
+    bridgeInternals.sessionPendingPermissions = new Map();
+    const observed: SessionState[] = [];
+    bridge.subscribeToSession('s1', (state) => observed.push(state));
+
+    bridge.addPendingPermission('s1', {
+      requestId: 'req-1',
+      kind: 'shell',
+      requestedAt: '2026-05-20T20:01:00.000Z',
+    });
+
+    expect(bridge.getSessionState('s1')?.pendingPermissions).toEqual([
+      { requestId: 'req-1', kind: 'shell', requestedAt: '2026-05-20T20:01:00.000Z' },
+    ]);
+    expect(observed.at(-1)?.pendingPermissions).toEqual([
+      { requestId: 'req-1', kind: 'shell', requestedAt: '2026-05-20T20:01:00.000Z' },
+    ]);
+
+    bridge.removePendingPermission('s1', 'req-1');
+
+    expect(bridge.getSessionState('s1')?.pendingPermissions).toEqual([]);
+    expect(observed.at(-1)?.pendingPermissions).toEqual([]);
+  });
+
+  it('session/get returns pendingPermissions from bridge state', async () => {
+    const sent: SentMessage[] = [];
+    const session = fakeSession();
+    const { bridge } = bridgeWithSession(session);
+
+    const pendingPerm = {
+      requestId: 'req-abc',
+      kind: 'shell',
+      requestedAt: '2026-05-20T20:00:00.000Z',
+    };
+    (bridge.getSessionState as ReturnType<typeof vi.fn>).mockReturnValue(
+      defaultState({ pendingPermissions: [pendingPerm] }),
+    );
+
+    const handler = new AcpConnectionHandler(botConfig(), bridge, (msg) => sent.push(msg as SentMessage));
+    await handler.handle(JSON.stringify({ jsonrpc: '2.0', id: 'g1', method: 'session/get', params: { sessionId: 's1' } }));
+
+    const resp = sent.find((m) => (m as { id?: string }).id === 'g1');
+    expect(resp).toBeDefined();
+    expect((resp as { result?: { pendingPermissions?: unknown[] } }).result?.pendingPermissions).toEqual([pendingPerm]);
+  });
 });
