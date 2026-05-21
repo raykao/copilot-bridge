@@ -3,7 +3,9 @@ import type { SessionEvent } from '@github/copilot-sdk';
 export type SimplifiedUpdate =
   | { type: 'streaming'; content: string }
   | { type: 'completed'; content: string }
-  | { type: 'error'; content: string };
+  | { type: 'error'; content: string }
+  | { type: 'tool_start'; toolCallId: string; toolName: string; arguments: Record<string, unknown> }
+  | { type: 'tool_complete'; toolCallId: string; toolName: string; success: boolean; output: string; error?: string };
 
 export function translateSdkEvent(event: SessionEvent): SimplifiedUpdate | null {
   const t: string = event.type;
@@ -32,6 +34,51 @@ export function translateSdkEvent(event: SessionEvent): SimplifiedUpdate | null 
       typeof data.error === 'string' ? data.error :
       'session error';
     return { type: 'error', content: msg };
+  }
+  if (t === 'tool.execution_start') {
+    const d = (event as { data?: { toolCallId?: unknown; toolName?: unknown; arguments?: unknown } }).data ?? {};
+    const toolCallId = typeof d.toolCallId === 'string' ? d.toolCallId : `tool-${Date.now()}`;
+    const toolName = typeof d.toolName === 'string' ? d.toolName : 'unknown';
+    const args =
+      d.arguments !== null &&
+      d.arguments !== undefined &&
+      typeof d.arguments === 'object' &&
+      !Array.isArray(d.arguments)
+        ? (d.arguments as Record<string, unknown>)
+        : {};
+    return { type: 'tool_start', toolCallId, toolName, arguments: args };
+  }
+  if (t === 'tool.execution_complete') {
+    const d = (event as { data?: { toolCallId?: unknown; toolName?: unknown; success?: unknown; result?: unknown; error?: unknown } }).data ?? {};
+    const toolCallId = typeof d.toolCallId === 'string' ? d.toolCallId : `tool-${Date.now()}`;
+    const toolName = typeof d.toolName === 'string' ? d.toolName : 'unknown';
+    const success = d.success !== false;
+    const result =
+      d.result !== null &&
+      d.result !== undefined &&
+      typeof d.result === 'object' &&
+      !Array.isArray(d.result)
+        ? (d.result as Record<string, unknown>)
+        : {};
+    const output =
+      typeof result.detailedContent === 'string'
+        ? result.detailedContent
+        : typeof result.content === 'string'
+          ? result.content
+          : '';
+    const errObj =
+      d.error !== null &&
+      d.error !== undefined &&
+      typeof d.error === 'object' &&
+      !Array.isArray(d.error)
+        ? (d.error as Record<string, unknown>)
+        : null;
+    const error: string | undefined = !success
+      ? typeof errObj?.message === 'string'
+        ? errObj.message
+        : 'Tool failed'
+      : undefined;
+    return { type: 'tool_complete', toolCallId, toolName, success, output, error };
   }
   return null;
 }

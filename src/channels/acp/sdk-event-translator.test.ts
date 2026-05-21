@@ -122,4 +122,144 @@ describe('translateSdkEvent', () => {
 
     expect(translateSdkEvent(event)).toBeNull();
   });
+
+  it('maps tool.execution_start to tool_start with toolCallId, toolName, and arguments', () => {
+    const event = {
+      id: 'a',
+      timestamp: '2026-01-01T00:00:00Z',
+      parentId: null,
+      type: 'tool.execution_start',
+      data: {
+        toolCallId: 'tc-001',
+        toolName: 'bash',
+        arguments: { command: 'ls /tmp' },
+      },
+    } as unknown as SessionEvent;
+
+    expect(translateSdkEvent(event)).toEqual({
+      type: 'tool_start',
+      toolCallId: 'tc-001',
+      toolName: 'bash',
+      arguments: { command: 'ls /tmp' },
+    });
+  });
+
+  it('defaults arguments to {} when absent in tool.execution_start', () => {
+    const event = {
+      id: 'a',
+      timestamp: '2026-01-01T00:00:00Z',
+      parentId: null,
+      type: 'tool.execution_start',
+      data: { toolCallId: 'tc-002', toolName: 'view' },
+    } as unknown as SessionEvent;
+
+    const result = translateSdkEvent(event);
+    expect(result).not.toBeNull();
+    expect((result as { arguments: unknown }).arguments).toEqual({});
+  });
+
+  it('maps tool.execution_complete (success) to tool_complete using detailedContent', () => {
+    const event = {
+      id: 'a',
+      timestamp: '2026-01-01T00:00:00Z',
+      parentId: null,
+      type: 'tool.execution_complete',
+      data: {
+        toolCallId: 'tc-001',
+        toolName: 'bash',
+        success: true,
+        result: { content: 'short', detailedContent: 'full output here' },
+      },
+    } as unknown as SessionEvent;
+
+    expect(translateSdkEvent(event)).toEqual({
+      type: 'tool_complete',
+      toolCallId: 'tc-001',
+      toolName: 'bash',
+      success: true,
+      output: 'full output here',
+      error: undefined,
+    });
+  });
+
+  it('falls back to result.content when detailedContent absent in tool.execution_complete', () => {
+    const event = {
+      id: 'a',
+      timestamp: '2026-01-01T00:00:00Z',
+      parentId: null,
+      type: 'tool.execution_complete',
+      data: {
+        toolCallId: 'tc-003',
+        toolName: 'view',
+        success: true,
+        result: { content: 'file contents here' },
+      },
+    } as unknown as SessionEvent;
+
+    const result = translateSdkEvent(event);
+    expect(result).not.toBeNull();
+    expect((result as { output: string }).output).toBe('file contents here');
+  });
+
+  it('maps tool.execution_complete (failure) with error.message to error field', () => {
+    const event = {
+      id: 'a',
+      timestamp: '2026-01-01T00:00:00Z',
+      parentId: null,
+      type: 'tool.execution_complete',
+      data: {
+        toolCallId: 'tc-004',
+        toolName: 'bash',
+        success: false,
+        result: { content: '' },
+        error: { message: 'command not found' },
+      },
+    } as unknown as SessionEvent;
+
+    expect(translateSdkEvent(event)).toEqual({
+      type: 'tool_complete',
+      toolCallId: 'tc-004',
+      toolName: 'bash',
+      success: false,
+      output: '',
+      error: 'command not found',
+    });
+  });
+
+  it('defaults error to "Tool failed" when success=false and no error object', () => {
+    const event = {
+      id: 'a',
+      timestamp: '2026-01-01T00:00:00Z',
+      parentId: null,
+      type: 'tool.execution_complete',
+      data: {
+        toolCallId: 'tc-005',
+        toolName: 'bash',
+        success: false,
+      },
+    } as unknown as SessionEvent;
+
+    const result = translateSdkEvent(event);
+    expect(result).not.toBeNull();
+    expect((result as { error: string }).error).toBe('Tool failed');
+  });
+
+  it('sets error to undefined on successful tool.execution_complete', () => {
+    const event = {
+      id: 'a',
+      timestamp: '2026-01-01T00:00:00Z',
+      parentId: null,
+      type: 'tool.execution_complete',
+      data: {
+        toolCallId: 'tc-006',
+        toolName: 'view',
+        success: true,
+        result: { content: 'ok' },
+      },
+    } as unknown as SessionEvent;
+
+    const result = translateSdkEvent(event);
+    expect(result).not.toBeNull();
+    expect((result as { error: unknown }).error).toBeUndefined();
+  });
 });
