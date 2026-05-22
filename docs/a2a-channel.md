@@ -1,6 +1,6 @@
 # A2A Channel Adapter
 
-The A2A channel adapter exposes copilot-bridge agents over the [Agent2Agent (A2A) Protocol v1.0.0](https://a2aproject.github.io/A2A/latest/specification/), the open standard under the Linux Foundation for interoperable AI agent communication. It uses the JSON-RPC 2.0 over HTTP + SSE protocol binding defined in the spec.
+The A2A channel adapter exposes copilot-bridge agents over the [Agent2Agent (A2A) Protocol v1.0.0](https://a2aproject.github.io/A2A/latest/specification/), the open standard under the Linux Foundation for interoperable AI agent communication. It uses the JSON-RPC 2.0 over HTTP + SSE protocol binding, one of three first-class bindings defined in the spec (alongside gRPC and HTTP+JSON/REST).
 
 Use the A2A adapter when you want any A2A-compliant client - other agents, web UIs, third-party tooling - to interact with copilot-bridge agents without custom client code.
 
@@ -14,14 +14,14 @@ Use the A2A adapter when you want any A2A-compliant client - other agents, web U
 - [Discovery - Agent Card](#discovery---agent-card)
 - [JSON-RPC Endpoint](#json-rpc-endpoint)
 - [Operations](#operations)
-  - [message/send](#messagesend)
-  - [message/stream](#messagestream)
-  - [tasks/get](#tasksget)
-  - [tasks/cancel](#taskscancel)
-  - [tasks/resubscribe](#tasksresubscribe)
-  - [tasks/pushNotificationConfig/set](#taskspushnotificationconfigset)
-  - [tasks/pushNotificationConfig/get](#taskspushnotificationconfigget)
-  - [tasks/list](#taskslist)
+  - [SendMessage](#sendmessage)
+  - [SendStreamingMessage](#sendstreamingmessage)
+  - [GetTask](#gettask)
+  - [CancelTask](#canceltask)
+  - [SubscribeToTask](#subscribetotask)
+  - [CreateTaskPushNotificationConfig](#createtaskpushnotificationconfig)
+  - [GetTaskPushNotificationConfig](#gettaskpushnotificationconfig)
+  - [ListTasks](#listtasks)
 - [Task Lifecycle](#task-lifecycle)
 - [Streaming - SSE](#streaming---sse)
 - [HITL - Permission Approval](#hitl---permission-approval)
@@ -85,7 +85,7 @@ curl http://localhost:7880/healthz
 
 ```bash
 # Single agent card (standard A2A)
-curl http://localhost:7880/agents/copilot/.well-known/agent.json
+curl http://localhost:7880/agents/copilot/.well-known/agent-card.json
 
 # All agents (bridge extension - see Multi-agent Discovery)
 curl -H "Authorization: Bearer my-secret-key-here" \
@@ -102,7 +102,7 @@ curl -X POST http://localhost:7880/agents/copilot \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
-    "method": "message/stream",
+    "method": "SendStreamingMessage",
     "params": {
       "message": {
         "role": "user",
@@ -172,7 +172,7 @@ The A2A platform is configured under `platforms.a2a` in `config.json`.
 
 ## Authentication
 
-All requests (except `/.well-known/agent.json`) require a bearer token:
+All requests (except `/.well-known/agent-card.json`) require a bearer token:
 
 ```
 Authorization: Bearer <api-key-secret>
@@ -184,12 +184,12 @@ The token is matched against `platforms.a2a.apiKeys`. Each key may restrict whic
 
 ## Discovery - Agent Card
 
-The A2A spec requires each agent to publish its capabilities at `/.well-known/agent.json`.
+The A2A spec requires each agent to publish its capabilities at `/.well-known/agent-card.json`.
 
 ### Per-agent card (spec-standard)
 
 ```
-GET /agents/{agentName}/.well-known/agent.json
+GET /agents/{agentName}/.well-known/agent-card.json
 ```
 
 No authentication required (public endpoint per spec).
@@ -238,13 +238,13 @@ Authorization: Bearer <api-key>
 ```json
 {
   "agents": [
-    { "name": "copilot", "agentCardUrl": "http://localhost:7880/agents/copilot/.well-known/agent.json" },
-    { "name": "bob",     "agentCardUrl": "http://localhost:7880/agents/bob/.well-known/agent.json" }
+    { "name": "copilot", "agentCardUrl": "http://localhost:7880/agents/copilot/.well-known/agent-card.json" },
+    { "name": "bob",     "agentCardUrl": "http://localhost:7880/agents/bob/.well-known/agent-card.json" }
   ]
 }
 ```
 
-Clients SHOULD use the per-agent `/.well-known/agent.json` URL as their canonical reference. The list endpoint is for initial discovery only.
+Clients SHOULD use the per-agent `/.well-known/agent-card.json` URL as their canonical reference. The list endpoint is for initial discovery only.
 
 ---
 
@@ -264,13 +264,13 @@ For streaming operations, add:
 Accept: text/event-stream
 ```
 
-The server responds with `Content-Type: text/event-stream` for `message/stream` and `tasks/resubscribe`. All other operations respond with `Content-Type: application/json`.
+The server responds with `Content-Type: text/event-stream` for `SendStreamingMessage` and `SubscribeToTask`. All other operations respond with `Content-Type: application/json`.
 
 ---
 
 ## Operations
 
-### message/send
+### SendMessage
 
 Send a message and wait for the task to reach a terminal or interrupted state before returning.
 
@@ -280,50 +280,50 @@ Send a message and wait for the task to reach a terminal or interrupted state be
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "message/send",
+  "method": "SendMessage",
   "params": {
     "message": {
       "role": "user",
       "parts": [{ "kind": "text", "text": "Summarize the README" }]
     },
     "configuration": {
-      "return_immediately": false
+      "returnImmediately": false
     }
   }
 }
 ```
 
-Set `return_immediately: true` to return a `working` task immediately instead of blocking.
+Set `returnImmediately: true` to return a `TASK_STATE_WORKING` task immediately instead of blocking.
 
 **Response:** A `Task` object at its final or interrupted state.
 
 ---
 
-### message/stream
+### SendStreamingMessage
 
 Send a message and stream updates in real time over SSE.
 
-**Request:** Same shape as `message/send`.
+**Request:** Same shape as `SendMessage`.
 
 **Response:** `Content-Type: text/event-stream`. Each SSE event is a JSON-encoded `StreamResponse`:
 
 ```
-data: {"task": {"id": "abc123", "status": {"state": "submitted"}, ...}}
+data: {"task": {"id": "abc123", "status": {"state": "TASK_STATE_SUBMITTED"}, ...}}
 
-data: {"taskStatusUpdateEvent": {"taskId": "abc123", "status": {"state": "working"}, "final": false}}
+data: {"statusUpdate": {"taskId": "abc123", "status": {"state": "TASK_STATE_WORKING"}, "final": false}}
 
-data: {"taskArtifactUpdateEvent": {"taskId": "abc123", "artifact": {"parts": [{"kind": "text", "text": "Here is the summary..."}]}, "append": true, "lastChunk": false}}
+data: {"artifactUpdate": {"taskId": "abc123", "artifact": {"parts": [{"kind": "text", "text": "Here is the summary..."}]}, "append": true, "lastChunk": false}}
 
-data: {"taskStatusUpdateEvent": {"taskId": "abc123", "status": {"state": "completed"}, "final": true}}
+data: {"statusUpdate": {"taskId": "abc123", "status": {"state": "TASK_STATE_COMPLETED"}, "final": true}}
 ```
 
-The stream closes when the task reaches a terminal state (`completed`, `failed`, `canceled`) or an interrupted state (`input-required`, `auth-required`).
+The stream closes when the task reaches a terminal state (`TASK_STATE_COMPLETED`, `TASK_STATE_FAILED`, `TASK_STATE_CANCELED`) or an interrupted state (`TASK_STATE_INPUT_REQUIRED`, `TASK_STATE_AUTH_REQUIRED`).
 
-**Persist the `taskId`.** You will need it to resume after `input-required` or after a disconnect.
+**Persist the `taskId`.** You will need it to resume after `TASK_STATE_INPUT_REQUIRED` or after a disconnect.
 
 ---
 
-### tasks/get
+### GetTask
 
 Retrieve the current state of a task.
 
@@ -331,7 +331,7 @@ Retrieve the current state of a task.
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "tasks/get",
+  "method": "GetTask",
   "params": {
     "id": "abc123",
     "historyLength": 0
@@ -343,7 +343,7 @@ Returns the `Task` object. Use `historyLength > 0` to include previous message t
 
 ---
 
-### tasks/cancel
+### CancelTask
 
 Cancel a running task.
 
@@ -351,7 +351,7 @@ Cancel a running task.
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "tasks/cancel",
+  "method": "CancelTask",
   "params": { "id": "abc123" }
 }
 ```
@@ -360,7 +360,7 @@ Returns the updated `Task`. Cancellation is best-effort - the task may have alre
 
 ---
 
-### tasks/resubscribe
+### SubscribeToTask
 
 Reattach an SSE stream to an existing task that is still in progress.
 
@@ -368,7 +368,7 @@ Reattach an SSE stream to an existing task that is still in progress.
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "tasks/resubscribe",
+  "method": "SubscribeToTask",
   "params": { "id": "abc123" }
 }
 ```
@@ -379,7 +379,7 @@ Use this after a network drop or when a user reopens a card that was running in 
 
 ---
 
-### tasks/pushNotificationConfig/set
+### CreateTaskPushNotificationConfig
 
 Register a webhook to receive task state changes asynchronously.
 
@@ -387,7 +387,7 @@ Register a webhook to receive task state changes asynchronously.
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "tasks/pushNotificationConfig/set",
+  "method": "CreateTaskPushNotificationConfig",
   "params": {
     "taskId": "abc123",
     "pushNotificationConfig": {
@@ -398,13 +398,13 @@ Register a webhook to receive task state changes asynchronously.
 }
 ```
 
-Returns the created `PushNotificationConfig` with an assigned `id`. Bridge will POST `StreamResponse` payloads to the webhook URL on every task state transition, including `input-required`.
+Returns the created `PushNotificationConfig` with an assigned `id`. Bridge will POST `StreamResponse` payloads to the webhook URL on every task state transition, including `TASK_STATE_INPUT_REQUIRED`.
 
 See [Push Notifications](#push-notifications) for the full webhook flow.
 
 ---
 
-### tasks/pushNotificationConfig/get
+### GetTaskPushNotificationConfig
 
 Retrieve an existing push notification config.
 
@@ -412,14 +412,14 @@ Retrieve an existing push notification config.
 {
   "jsonrpc": "2.0",
   "id": 6,
-  "method": "tasks/pushNotificationConfig/get",
+  "method": "GetTaskPushNotificationConfig",
   "params": { "taskId": "abc123", "pushNotificationConfigId": "cfg-xyz" }
 }
 ```
 
 ---
 
-### tasks/list
+### ListTasks
 
 List tasks with optional filtering. Tasks are sorted by last update time descending.
 
@@ -427,10 +427,10 @@ List tasks with optional filtering. Tasks are sorted by last update time descend
 {
   "jsonrpc": "2.0",
   "id": 7,
-  "method": "tasks/list",
+  "method": "ListTasks",
   "params": {
     "filter": {
-      "state": "input-required"
+      "state": "TASK_STATE_INPUT_REQUIRED"
     },
     "pageSize": 20,
     "pageToken": ""
@@ -444,36 +444,37 @@ Returns a `ListTasksResponse` with `tasks[]` and `nextPageToken` (empty string w
 
 ## Task Lifecycle
 
-Tasks progress through the following states:
+Tasks progress through the following states. Wire format is SCREAMING_SNAKE_CASE as defined in the A2A proto spec (§4.1.3).
 
 ```
-submitted -> working -> completed
-                     -> failed
-                     -> canceled
-                     -> input-required -> working (after client sends approval)
-                     -> auth-required  -> working (after client sends credentials)
+TASK_STATE_SUBMITTED -> TASK_STATE_WORKING -> TASK_STATE_COMPLETED
+                                           -> TASK_STATE_FAILED
+                                           -> TASK_STATE_CANCELED
+                                           -> TASK_STATE_REJECTED
+                                           -> TASK_STATE_INPUT_REQUIRED -> TASK_STATE_WORKING (after approval)
+                                           -> TASK_STATE_AUTH_REQUIRED  -> TASK_STATE_WORKING (after credentials)
 ```
 
 ### Mapping from SDK events
 
 | Copilot SDK event | A2A task state |
 |---|---|
-| Session accepted | `submitted` |
-| Agent begins processing | `working` |
-| Tool call triggered (permission needed) | `input-required` |
-| Permission resolved | `working` |
-| Agent finishes response | `completed` |
-| Session error | `failed` |
-| Client cancels | `canceled` |
+| Session accepted | `TASK_STATE_SUBMITTED` |
+| Agent begins processing | `TASK_STATE_WORKING` |
+| Tool call triggered (permission needed) | `TASK_STATE_INPUT_REQUIRED` |
+| Permission resolved | `TASK_STATE_WORKING` |
+| Agent finishes response | `TASK_STATE_COMPLETED` |
+| Session error | `TASK_STATE_FAILED` |
+| Client cancels | `TASK_STATE_CANCELED` |
 
-### `input-required` payload
+### `TASK_STATE_INPUT_REQUIRED` payload
 
-When a task enters `input-required`, the `TaskStatus.message` carries the details the client needs to render the approval UI:
+When a task enters `TASK_STATE_INPUT_REQUIRED`, the `TaskStatus.message` carries the details the client needs to render the approval UI. The `data` part shape shown below (`kind: "permission_request"`) is a bridge convention for encoding tool permission requests - it is not part of the A2A spec. The spec allows arbitrary `Parts` in a status message.
 
 ```json
 {
   "status": {
-    "state": "input-required",
+    "state": "TASK_STATE_INPUT_REQUIRED",
     "message": {
       "role": "agent",
       "parts": [
@@ -500,22 +501,22 @@ When a task enters `input-required`, the `TaskStatus.message` carries the detail
 
 ## Streaming - SSE
 
-`message/stream` and `tasks/resubscribe` both return `Content-Type: text/event-stream`.
+`SendStreamingMessage` and `SubscribeToTask` both return `Content-Type: text/event-stream`.
 
 ### Event types
 
 | Event field | When emitted |
 |---|---|
-| `task` | First event on `message/stream` - the initial Task object |
-| `taskStatusUpdateEvent` | Task state changes (`working`, `input-required`, `completed`, etc.) |
-| `taskArtifactUpdateEvent` | Streaming content chunks and tool call trajectory data |
+| `task` | First event on `SendStreamingMessage` - the initial Task object |
+| `statusUpdate` | Task state changes (`TASK_STATE_WORKING`, `TASK_STATE_INPUT_REQUIRED`, `TASK_STATE_COMPLETED`, etc.) |
+| `artifactUpdate` | Streaming content chunks and tool call trajectory data |
 
 ### Tool call trajectory in artifacts
 
 Tool call progress is surfaced as artifact updates with a `trajectory` metadata part:
 
 ```
-data: {"taskArtifactUpdateEvent": {
+data: {"artifactUpdate": {
   "taskId": "abc123",
   "artifact": {
     "parts": [
@@ -539,7 +540,7 @@ Followed by `tool_complete` or `tool_error` when the tool call finishes. Clients
 
 ### Heartbeats
 
-Bridge emits a comment line (`: keep-alive`) every 15 seconds on idle streams to prevent proxy timeouts.
+Bridge emits a comment line (`: keep-alive`) every 15 seconds on idle streams to prevent proxy timeouts. This is bridge implementation behavior - the A2A spec does not prescribe keepalive cadence.
 
 ---
 
@@ -552,24 +553,24 @@ This is the full flow when an agent hits a tool permission gate, entirely within
 ```
 client                               bridge
   |                                    |
-  |-- message/stream ----------------->|
-  |<-- SSE: task(working) -------------|
+  |-- SendStreamingMessage ----------------->|
+  |<-- SSE: task(TASK_STATE_WORKING) -------------|
   |<-- SSE: artifact(tool_start) ------|
-  |<-- SSE: statusUpdate --------------|  <- task goes input-required
-  |    state: input-required           |
+  |<-- SSE: statusUpdate --------------|  <- task goes TASK_STATE_INPUT_REQUIRED
+  |    state: TASK_STATE_INPUT_REQUIRED           |
   |    message: {tool, details}        |
   |                                    |
   | [render approval UI]               |
   |                                    |
-  |-- message/send (taskId) ---------->|  <- approval decision
+  |-- SendMessage (taskId) ---------->|  <- approval decision
   |    message: "approved"             |
   |                                    |
-  |<-- SSE: statusUpdate --------------|  <- task back to working
-  |    state: working                  |
+  |<-- SSE: statusUpdate --------------|  <- task back to TASK_STATE_WORKING
+  |    state: TASK_STATE_WORKING                  |
   |<-- SSE: artifact(tool_complete) ---|
   |<-- SSE: artifact(text chunks) -----|
   |<-- SSE: statusUpdate --------------|
-  |    state: completed (final: true)  |
+  |    state: TASK_STATE_COMPLETED (final: true)  |
   | [SSE closes]                       |
 ```
 
@@ -581,15 +582,15 @@ client                               bridge
   | [stream closed / user navigated away]
   |                                    |
   |<-- POST /api/a2a/notifications ----|  <- push notification
-  |    { taskId, state: input-required |
+  |    { taskId, state: TASK_STATE_INPUT_REQUIRED |
   |      message: {tool, details} }    |
   |                                    |
   | [render approval banner]           |
   |                                    |
-  |-- message/send (taskId) ---------->|  <- approval decision
-  |-- tasks/resubscribe (taskId) ----->|  <- reattach stream
+  |-- SendMessage (taskId) ---------->|  <- approval decision
+  |-- SubscribeToTask (taskId) ----->|  <- reattach stream
   |<-- SSE: task(current state) -------|
-  |<-- SSE: statusUpdate(working) -----|
+  |<-- SSE: statusUpdate(TASK_STATE_WORKING) -----|
   | [stream resumes]                   |
 ```
 
@@ -599,7 +600,7 @@ client                               bridge
 {
   "jsonrpc": "2.0",
   "id": 10,
-  "method": "message/send",
+  "method": "SendMessage",
   "params": {
     "message": {
       "role": "user",
@@ -622,13 +623,13 @@ Push notifications let bridge reach your server even when no SSE connection is o
 
 ### Setup
 
-Register a webhook after creating a task (or you can register before dispatching using `message/send` with `return_immediately: true`):
+Register a webhook after creating a task (or you can register before dispatching using `SendMessage` with `returnImmediately: true`):
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "tasks/pushNotificationConfig/set",
+  "method": "CreateTaskPushNotificationConfig",
   "params": {
     "taskId": "abc123",
     "pushNotificationConfig": {
@@ -647,10 +648,10 @@ Bridge POSTs a `StreamResponse`-shaped body on every task state transition:
 
 ```json
 {
-  "taskStatusUpdateEvent": {
+  "statusUpdate": {
     "taskId": "abc123",
     "status": {
-      "state": "input-required",
+      "state": "TASK_STATE_INPUT_REQUIRED",
       "message": {
         "role": "agent",
         "parts": [
@@ -668,12 +669,12 @@ Your webhook endpoint MUST return `HTTP 200` within 5 seconds. Bridge will retry
 
 ### State transitions that trigger a push
 
-- `working` (task starts)
-- `input-required` (permission needed - the primary use case)
-- `auth-required` (credentials needed)
-- `completed`
-- `failed`
-- `canceled`
+- `TASK_STATE_WORKING` (task starts)
+- `TASK_STATE_INPUT_REQUIRED` (permission needed - the primary use case)
+- `TASK_STATE_AUTH_REQUIRED` (credentials needed)
+- `TASK_STATE_COMPLETED`
+- `TASK_STATE_FAILED`
+- `TASK_STATE_CANCELED`
 
 ---
 
@@ -683,20 +684,18 @@ A2A uses `contextId` to group related tasks into a logical session. Tasks with t
 
 ### Starting a new session
 
-Omit `contextId` (or let the client generate one) on the first `message/send` or `message/stream`. Bridge creates a new session and returns the `contextId` in the `Task` response.
+Omit `contextId` (or let the client generate one) on the first `SendMessage` or `SendStreamingMessage`. Bridge creates a new session and returns the `contextId` in the `Task` response.
 
 ### Continuing a session
 
-Pass the `contextId` from the previous task:
+Pass the `contextId` from the previous task. Per A2A spec §3.4.3, `contextId` belongs on the `Message` object:
 
 ```json
 {
   "params": {
     "message": {
       "role": "user",
-      "parts": [{ "kind": "text", "text": "Now refactor that function" }]
-    },
-    "configuration": {
+      "parts": [{ "kind": "text", "text": "Now refactor that function" }],
       "contextId": "ctx-session-abc"
     }
   }
@@ -712,12 +711,12 @@ Bridge routes this to the existing session, preserving conversation history.
 ### After a network drop
 
 ```
-1. tasks/get(taskId)
+1. GetTask(taskId)
    -> check current state
-   -> if input-required: render approval UI immediately (no SSE needed)
-   -> if working: proceed to step 2
+   -> if TASK_STATE_INPUT_REQUIRED: render approval UI immediately (no SSE needed)
+   -> if TASK_STATE_WORKING: proceed to step 2
 
-2. tasks/resubscribe(taskId)
+2. SubscribeToTask(taskId)
    -> opens new SSE stream
    -> first event is current Task state (spec guarantee - no gap)
    -> subsequent events continue the live stream
@@ -725,9 +724,9 @@ Bridge routes this to the existing session, preserving conversation history.
 
 ### After the bridge restarts
 
-Bridge persists task state to disk. On restart, in-flight tasks are marked `failed` with a descriptive error message. Clients detect this via `tasks/get` or the push notification webhook.
+Bridge persists task state to disk. On restart, in-flight tasks are marked `TASK_STATE_FAILED` with a descriptive error message. Clients detect this via `GetTask` or the push notification webhook.
 
-To re-run a task after a bridge restart: send a new `message/stream` with the same `contextId`. If the session was persisted, the bridge may be able to resume it; if not, a new session is created.
+To re-run a task after a bridge restart: send a new `SendStreamingMessage` with the same `contextId`. If the session was persisted, the bridge may be able to resume it; if not, a new session is created.
 
 ---
 
@@ -739,7 +738,7 @@ Bridge runs N agents through a single HTTP server. Routing is by URL path:
 |---|---|
 | `/agents/copilot` | `copilot` agent |
 | `/agents/bob` | `bob` agent |
-| `/agents/copilot/.well-known/agent.json` | copilot's agent card |
+| `/agents/copilot/.well-known/agent-card.json` | copilot's agent card |
 | `/agents` | list of all agents (bridge extension) |
 
 Each agent has its own independent task namespace. A `taskId` created under `/agents/copilot` is not visible under `/agents/bob`.
@@ -773,10 +772,10 @@ This section documents the three requirements that were identified as potential 
 
 **Concern:** Custom WS channel had explicit `session/resume` logic. What happens when a client disconnects mid-run?
 
-**A2A solution: `tasks/resubscribe` - fully in spec.**
+**A2A solution: `SubscribeToTask` - fully in spec.**
 
 The client persists the `taskId`. On reconnect:
-1. `tasks/get(taskId)` - snapshot current state, detect if `input-required` was missed
+1. `tasks/get(taskId)` - snapshot current state, detect if `TASK_STATE_INPUT_REQUIRED` was missed
 2. `tasks/resubscribe(taskId)` - opens new SSE stream; spec REQUIRES the first event to be the current Task state
 
 No gap. No custom bridge work needed.
@@ -789,15 +788,15 @@ This breaks into two sub-cases.
 
 #### 2a. Single-task live view (what is this agent doing right now)
 
-**A2A solution: `message/stream` SSE - fully in spec.**
+**A2A solution: `SendStreamingMessage` SSE - fully in spec.**
 
-`TaskArtifactUpdateEvent` carries streaming text chunks and tool call trajectory as data Parts. `TaskStatusUpdateEvent` carries state transitions including `input-required`. `tasks/resubscribe` reattaches after a drop.
+`artifactUpdate` events carry streaming text chunks and tool call trajectory as data Parts. `statusUpdate` events carry state transitions including `TASK_STATE_INPUT_REQUIRED`. `SubscribeToTask` reattaches after a drop.
 
 No gap. No custom bridge work needed.
 
 #### 2b. Board-level live view (all agents, all tasks simultaneously)
 
-**Gap: A2A has no "subscribe to all tasks" operation.** `tasks/list` is snapshot-only.
+**Gap: A2A has no "subscribe to all tasks" operation.** `ListTasks` is snapshot-only.
 
 **Solution: push notifications per task, aggregated by kanban server. No custom bridge endpoint required.**
 
@@ -809,7 +808,7 @@ kanban server serves its own SSE stream to the browser
 browser watches kanban server, not bridge directly
 ```
 
-Push notifications (`tasks/pushNotificationConfig/set`) are spec-native. Kanban registers a webhook. Bridge POSTs a `StreamResponse` payload on every task state transition for every task. Kanban server owns board state aggregation. This is an architectural responsibility, not a protocol gap - the same pattern used by any A2A client that needs to track multiple tasks.
+Push notifications (`CreateTaskPushNotificationConfig`) are spec-native. Kanban registers a webhook. Bridge POSTs a `StreamResponse` payload on every task state transition for every task. Kanban server owns board state aggregation. This is an architectural responsibility, not a protocol gap - the same pattern used by any A2A client that needs to track multiple tasks.
 
 **Bridge stays pure A2A. Kanban server owns the board.**
 
@@ -817,7 +816,7 @@ Push notifications (`tasks/pushNotificationConfig/set`) are spec-native. Kanban 
 
 ### Gap 3: Serving multiple agents from one server
 
-**Gap: A2A spec defines one agent per server (`/.well-known/agent.json`). No multi-agent routing is defined.**
+**Gap: A2A spec defines one agent per server (`/.well-known/agent-card.json`). No multi-agent routing is defined.**
 
 **Solution: URL-path routing. Each per-agent path is a fully A2A-compliant endpoint. `GET /agents` is the only non-spec addition.**
 
@@ -831,8 +830,8 @@ Bridge routes by URL path (`/agents/copilot`, `/agents/bob`). Each path is a com
 
 | Requirement | Spec-native solution | Custom bridge work |
 |---|---|---|
-| Session reconnect | `tasks/resubscribe` | None |
-| Single-task live view | `message/stream` SSE | None |
+| Session reconnect | `SubscribeToTask` | None |
+| Single-task live view | `SendStreamingMessage` SSE | None |
 | Board-level live view | Push notifications per task; kanban aggregates | None - kanban owns it |
 | Multiple agents from one server | URL-path routing | `GET /agents` list only |
 
@@ -850,7 +849,7 @@ The A2A channel implementation in `src/channels/a2a/` MUST conform to A2A v1.0.0
 
 - No card/checkpoint/label system (that is the kanban app's concern)
 - No custom WebSocket transport (A2A uses HTTP + SSE only)
-- No session subscription push in the WS-RPC style (replaced by `tasks/resubscribe` + push notifications)
+- No session subscription push in the WS-RPC style (replaced by `SubscribeToTask` + push notifications)
 - No bridge-specific JSON-RPC methods beyond the A2A operation set
 
 ### Relation to `channels/copilot-bridge-ws-rpc/`
@@ -859,7 +858,7 @@ The WS-RPC channel (`channels/acp/`, to be renamed) remains for internal clients
 
 ### Auth note
 
-`/.well-known/agent.json` is intentionally unauthenticated per the A2A spec. All other endpoints require a bearer token.
+`/.well-known/agent-card.json` is intentionally unauthenticated per the A2A spec. All other endpoints require a bearer token.
 
 ### Spec references
 
