@@ -30,6 +30,7 @@ Use the A2A adapter when you want any A2A-compliant client - other agents, web U
 - [Reconnect and Resume](#reconnect-and-resume)
 - [Multi-agent Discovery](#multi-agent-discovery)
 - [Error Codes](#error-codes)
+- [Protocol Gaps and Solutions](#protocol-gaps-and-solutions)
 - [Implementation Notes](#implementation-notes)
 
 ---
@@ -761,6 +762,81 @@ Standard A2A JSON-RPC error codes:
 | `-32003` | `PushNotificationNotSupported` | Push notifications disabled in config |
 | `-32004` | `UnsupportedOperation` | Operation not supported (e.g. streaming not accepted) |
 | `-32005` | `ContentTypeNotSupported` | Unsupported part media type |
+
+---
+
+## Protocol Gaps and Solutions
+
+This section documents the three requirements that were identified as potential blockers when migrating from the custom `copilot-bridge-ws-rpc` channel to A2A, and how each is resolved.
+
+### Gap 1: Session reconnect
+
+**Concern:** Custom WS channel had explicit `session/resume` logic. What happens when a client disconnects mid-run?
+
+**A2A solution: `tasks/resubscribe` - fully in spec.**
+
+The client persists the `taskId`. On reconnect:
+1. `tasks/get(taskId)` - snapshot current state, detect if `input-required` was missed
+2. `tasks/resubscribe(taskId)` - opens new SSE stream; spec REQUIRES the first event to be the current Task state
+
+No gap. No custom bridge work needed.
+
+---
+
+### Gap 2: Live views of sessions
+
+This breaks into two sub-cases.
+
+#### 2a. Single-task live view (what is this agent doing right now)
+
+**A2A solution: `message/stream` SSE - fully in spec.**
+
+`TaskArtifactUpdateEvent` carries streaming text chunks and tool call trajectory as data Parts. `TaskStatusUpdateEvent` carries state transitions including `input-required`. `tasks/resubscribe` reattaches after a drop.
+
+No gap. No custom bridge work needed.
+
+#### 2b. Board-level live view (all agents, all tasks simultaneously)
+
+**Gap: A2A has no "subscribe to all tasks" operation.** `tasks/list` is snapshot-only.
+
+**Solution: push notifications per task, aggregated by kanban server. No custom bridge endpoint required.**
+
+The architecture:
+```
+bridge ----POST /api/a2a/notifications----> kanban server   (on every task state change)
+kanban server aggregates all task state into its own board model
+kanban server serves its own SSE stream to the browser
+browser watches kanban server, not bridge directly
+```
+
+Push notifications (`tasks/pushNotificationConfig/set`) are spec-native. Kanban registers a webhook. Bridge POSTs a `StreamResponse` payload on every task state transition for every task. Kanban server owns board state aggregation. This is an architectural responsibility, not a protocol gap - the same pattern used by any A2A client that needs to track multiple tasks.
+
+**Bridge stays pure A2A. Kanban server owns the board.**
+
+---
+
+### Gap 3: Serving multiple agents from one server
+
+**Gap: A2A spec defines one agent per server (`/.well-known/agent.json`). No multi-agent routing is defined.**
+
+**Solution: URL-path routing. Each per-agent path is a fully A2A-compliant endpoint. `GET /agents` is the only non-spec addition.**
+
+Bridge routes by URL path (`/agents/copilot`, `/agents/bob`). Each path is a complete, independent A2A server - its own agent card, its own task namespace, its own JSON-RPC endpoint. The routing is plain HTTP and does not touch A2A operation semantics.
+
+`GET /agents` (returning a list of agent names and card URLs) is a bridge-level discovery convenience. It is not an A2A operation and does not affect compliance of the per-agent endpoints.
+
+---
+
+### Net result
+
+| Requirement | Spec-native solution | Custom bridge work |
+|---|---|---|
+| Session reconnect | `tasks/resubscribe` | None |
+| Single-task live view | `message/stream` SSE | None |
+| Board-level live view | Push notifications per task; kanban aggregates | None - kanban owns it |
+| Multiple agents from one server | URL-path routing | `GET /agents` list only |
+
+**Bridge `channels/a2a/` can be 100% A2A v1.0.0 compliant.** No separate non-A2A HTTP/WS/SSE endpoint is required. `GET /agents` is the only bridge addition and it does not modify any A2A operation.
 
 ---
 
