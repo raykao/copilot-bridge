@@ -317,3 +317,139 @@ export interface FormattedEvent {
   content: string;
   verbose: boolean; // whether this should only show in verbose mode
 }
+
+
+// ---- A2A Protocol Types ----
+
+export const TaskState = {
+  SUBMITTED:      'TASK_STATE_SUBMITTED',
+  WORKING:        'TASK_STATE_WORKING',
+  COMPLETED:      'TASK_STATE_COMPLETED',
+  FAILED:         'TASK_STATE_FAILED',
+  CANCELED:       'TASK_STATE_CANCELED',
+  REJECTED:       'TASK_STATE_REJECTED',
+  INPUT_REQUIRED: 'TASK_STATE_INPUT_REQUIRED',
+  AUTH_REQUIRED:  'TASK_STATE_AUTH_REQUIRED',
+} as const;
+export type TaskStateValue = typeof TaskState[keyof typeof TaskState];
+
+export interface TextPart {
+  kind: 'text';
+  text: string;
+}
+export interface DataPart {
+  kind: 'data';
+  data: Record<string, unknown>;
+}
+export interface FilePart {
+  kind: 'file';
+  file: { name?: string; mimeType?: string; uri?: string; bytes?: string };
+}
+export type Part = TextPart | DataPart | FilePart;
+
+export interface A2AMessage {
+  role: 'user' | 'agent';
+  parts: Part[];
+  contextId?: string;
+  taskId?: string;
+  messageId?: string;
+}
+
+export interface TaskStatus {
+  state: TaskStateValue;
+  message?: A2AMessage;
+  timestamp?: string;
+}
+
+export interface Artifact {
+  artifactId?: string;
+  name?: string;
+  parts: Part[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface Task {
+  id: string;
+  contextId: string;
+  status: TaskStatus;
+  artifacts?: Artifact[];
+  history?: A2AMessage[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface StreamResponse {
+  task?: Task;
+  statusUpdate?: { taskId: string; status: TaskStatus; final: boolean };
+  artifactUpdate?: { taskId: string; artifact: Artifact; append: boolean; lastChunk: boolean };
+}
+
+export interface AgentCardCapabilities {
+  streaming: boolean;
+  pushNotifications: boolean;
+  stateTransitionHistory: boolean;
+}
+export interface AgentCardSkill {
+  id: string;
+  name: string;
+  description?: string;
+  tags?: string[];
+}
+export interface AgentCard {
+  name: string;
+  description?: string;
+  url: string;
+  version: string;
+  capabilities: AgentCardCapabilities;
+  defaultInputModes: string[];
+  defaultOutputModes: string[];
+  securitySchemes?: Record<string, unknown>;
+  security?: Record<string, unknown>[];
+  skills?: AgentCardSkill[];
+}
+
+export interface PushNotificationConfig {
+  id: string;
+  taskId: string;
+  url: string;
+  token?: string;
+}
+
+export interface JsonRpcRequest {
+  jsonrpc: '2.0';
+  id: string | number | null;
+  method: string;
+  params?: unknown;
+}
+export interface JsonRpcSuccess {
+  jsonrpc: '2.0';
+  id: string | number | null;
+  result: unknown;
+}
+export interface JsonRpcError {
+  jsonrpc: '2.0';
+  id: string | number | null;
+  error: { code: number; message: string; data?: unknown };
+}
+export type JsonRpcResponse = JsonRpcSuccess | JsonRpcError;
+
+// A2A platform config (under platforms.a2a in config.json)
+export interface A2ABotConfig {
+  token: string;
+  agent?: string;
+  model?: string;
+}
+export interface A2AApiKeyConfig {
+  secret: string;          // literal value or "env:VAR_NAME"
+  allowedAgents: string[]; // agent names or ["*"]
+}
+export interface A2APlatformConfig {
+  enabled: boolean;
+  bind?: string;   // default "127.0.0.1"
+  port?: number;   // default 7880
+  bots: Record<string, A2ABotConfig>;
+  apiKeys?: Record<string, A2AApiKeyConfig>;
+  pushNotifications?: {
+    enabled?: boolean;       // default true
+    verifyWebhook?: boolean; // default true
+  };
+}
