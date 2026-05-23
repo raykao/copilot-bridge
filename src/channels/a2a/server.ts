@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { serve } from '@hono/node-server';
 import { createLogger } from '../../logger.js';
 import type { A2APlatformConfig, AgentCard } from '../../types.js';
@@ -21,7 +22,7 @@ export class A2AServer {
   private buildApp(): Hono {
     const app = new Hono();
 
-    app.get('/healthz', async (c) => {
+    app.get('/healthz', async (c: Context) => {
       return c.json({ status: 'ok', protocol: 'a2a', version: '1.0.0' });
     });
 
@@ -38,10 +39,10 @@ export class A2AServer {
       await next();
     };
 
-    app.get('/agents/:name/.well-known/agent-card.json', async (c) => {
-      const agentName = c.req.param('name');
+    app.get('/agents/:name/.well-known/agent-card.json', async (c: Context) => {
+      const agentName = c.req.param('name') ?? '';
 
-      if (!(agentName in this.config.bots)) {
+      if (!agentName || !(agentName in this.config.bots)) {
         return c.json({ error: 'Not found' }, 404);
       }
 
@@ -49,7 +50,7 @@ export class A2AServer {
       return c.json(this.buildAgentCard(agentName, baseUrl));
     });
 
-    app.get('/agents', authMiddleware, async (c) => {
+    app.get('/agents', authMiddleware, async (c: Context) => {
       return c.json({
         agents: Object.keys(this.config.bots).map((name) => ({
           name,
