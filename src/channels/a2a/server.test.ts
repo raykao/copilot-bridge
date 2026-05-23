@@ -60,4 +60,25 @@ describe('A2AServer routing', () => {
     const res = await app.request('/agents/copilot', { method: 'POST' });
     expect(res.status).toBe(401);
   });
+
+  it('POST /agents/:name with Accept: text/event-stream routes through SSE path', async () => {
+    const res = await app.request('/agents/copilot', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-secret',
+        Accept: 'text/event-stream',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'SubscribeToTask',
+        params: { id: 'missing-task' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+  });
+
 });

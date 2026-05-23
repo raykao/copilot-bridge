@@ -46,6 +46,23 @@ describe('TaskStore', () => {
     expect(result.tasks[0].id).toBe(t1.id);
   });
 
+
+  it('subscribeToTask fires listener when task is updated', () => {
+    const store = new TaskStore();
+    const task = store.createTask();
+    const received: unknown[] = [];
+    const unsubscribe = store.subscribeToTask(task.id, (updated) => {
+      received.push(updated);
+    });
+
+    const updated = store.updateTask(task.id, {
+      status: { state: 'TASK_STATE_WORKING' },
+    });
+
+    expect(received).toEqual([updated]);
+    unsubscribe();
+  });
+
   it('addPushConfig stores and getPushConfigs retrieves', () => {
     const store = new TaskStore();
     const task = store.createTask();

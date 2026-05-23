@@ -1,6 +1,7 @@
 import { approveAll, type CopilotSession } from '@github/copilot-sdk';
+import { type SSEStreamingApi } from 'hono/streaming';
 import { createLogger } from '../../logger.js';
-import { TaskState, type A2AMessage, type A2APlatformConfig, type JsonRpcRequest, type JsonRpcResponse, type Part, type Task } from '../../types.js';
+import { TaskState, type A2AMessage, type A2APlatformConfig, type JsonRpcRequest, type JsonRpcResponse, type Part, type Task, type TaskStateValue } from '../../types.js';
 import type { CopilotBridge } from '../../core/bridge.js';
 import type { TaskStore } from './task-store.js';
 import type { SessionMap } from './session-map.js';
@@ -49,6 +50,7 @@ export interface RpcContext {
   agentName: string;
   allowedAgents: string[];
   isStreaming: boolean;
+  sseStream?: SSEStreamingApi;
 }
 
 export type RpcMethodHandler = (
@@ -198,10 +200,209 @@ export class RpcHandler {
     return rpcSuccess(req.id, await terminalTask.promise);
   }
 
-  private async handleSendStreamingMessage(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
-    void params;
-    void ctx;
-    return rpcSuccess(req.id, { status: 'queued' });
+  private async handleSendStreamingMessage(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse | 'SSE'> {
+    void req;
+    if (!ctx.sseStream) return 'SSE';
+
+    if (!this.bridge || !this.sessionMap || !this.config) {
+      await ctx.sseStream.close();
+      return 'SSE';
+    }
+
+    if (!isSendMessageParams(params)) {
+      await ctx.sseStream.close();
+      return 'SSE';
+    }
+
+    const stream = ctx.sseStream;
+    const message = params.message;
+    const text = extractText(message.parts);
+    const timestamp = new Date().toISOString();
+
+    const providedContextId = message.contextId;
+    const existingSessionId = providedContextId
+      ? this.sessionMap.getSessionForContext(providedContextId)
+      : undefined;
+    const session = existingSessionId
+      ? await this.bridge.resumeSession(existingSessionId, this.buildSessionOptions(ctx.agentName))
+      : await this.bridge.createSession(this.buildSessionOptions(ctx.agentName));
+
+    const taskId = crypto.randomUUID();
+    const task = this.store.createTask({
+      id: taskId,
+      contextId: providedContextId,
+      sessionId: session.sessionId,
+      status: { state: TaskState.SUBMITTED, timestamp },
+    });
+    this.sessionMap.link(task.id, task.contextId, session.sessionId);
+
+    await stream.writeSSE({ data: JSON.stringify({ task }) });
+
+    const done = createDeferred();
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined = setInterval(() => {
+      writeKeepAlive(stream).catch(() => {});
+    }, 15_000);
+    if (typeof heartbeatTimer === 'object' && heartbeatTimer !== null && 'unref' in heartbeatTimer) {
+      (heartbeatTimer as any).unref();
+    }
+
+    let unsubscribe: (() => void) | undefined;
+    const cleanup = (): void => {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = undefined;
+      }
+      if (unsubscribe) {
+        const unsubscribeOnce = unsubscribe;
+        unsubscribe = undefined;
+        unsubscribeOnce();
+      }
+    };
+
+    let closing = false;
+    const beginClosing = (): boolean => {
+      if (closing) return false;
+      closing = true;
+      cleanup();
+      return true;
+    };
+    const finishClosing = async (): Promise<void> => {
+      try {
+        await stream.close();
+      } finally {
+        done.resolve();
+      }
+    };
+    const waitForClose = async (): Promise<void> => {
+      await done.promise;
+    };
+
+    const artifactId = crypto.randomUUID();
+    let textBuffer = '';
+
+    unsubscribe = session.on(async (event: any) => {
+      const ts = new Date().toISOString();
+      if (event.type === 'assistant.turn_start') {
+        const workingTask = this.store.updateTask(taskId, {
+          status: { state: TaskState.WORKING, timestamp: ts },
+        });
+        await stream.writeSSE({
+          data: JSON.stringify({
+            statusUpdate: { taskId, status: workingTask.status, final: false },
+          }),
+        });
+      } else if (event.type === 'assistant.message_delta') {
+        const delta: string = event.data?.content ?? event.data?.delta ?? '';
+        textBuffer += delta;
+        await stream.writeSSE({
+          data: JSON.stringify({
+            artifactUpdate: {
+              taskId,
+              artifact: {
+                artifactId,
+                parts: [{ kind: 'text', text: delta }],
+              },
+              append: true,
+              lastChunk: false,
+            },
+          }),
+        });
+      } else if (event.type === 'tool.execution_start') {
+        const toolName: string = event.data?.toolName ?? event.data?.name ?? '';
+        const toolCallId: string = event.data?.toolCallId ?? event.data?.id ?? '';
+        const input: unknown = event.data?.input ?? event.data?.arguments ?? {};
+        await stream.writeSSE({
+          data: JSON.stringify({
+            artifactUpdate: {
+              taskId,
+              artifact: {
+                artifactId: crypto.randomUUID(),
+                parts: [{ kind: 'data', data: { kind: 'tool_start', toolName, toolCallId, input } }],
+              },
+              append: true,
+              lastChunk: false,
+            },
+          }),
+        });
+      } else if (event.type === 'tool.execution_complete') {
+        const toolName: string = event.data?.toolName ?? event.data?.name ?? '';
+        const toolCallId: string = event.data?.toolCallId ?? event.data?.id ?? '';
+        const output: unknown = event.data?.output ?? event.data?.result ?? {};
+        await stream.writeSSE({
+          data: JSON.stringify({
+            artifactUpdate: {
+              taskId,
+              artifact: {
+                artifactId: crypto.randomUUID(),
+                parts: [{ kind: 'data', data: { kind: 'tool_complete', toolName, toolCallId, output } }],
+              },
+              append: true,
+              lastChunk: false,
+            },
+          }),
+        });
+      } else if (event.type === 'session.idle') {
+        if (!beginClosing()) return;
+        const completedTask = this.store.updateTask(taskId, {
+          status: { state: TaskState.COMPLETED, timestamp: new Date().toISOString() },
+          ...(textBuffer ? {
+            artifacts: [{
+              artifactId,
+              parts: [{ kind: 'text', text: textBuffer }],
+            }],
+          } : {}),
+        });
+        try {
+          await stream.writeSSE({
+            data: JSON.stringify({
+              statusUpdate: { taskId, status: completedTask.status, final: true },
+            }),
+          });
+        } finally {
+          await finishClosing();
+        }
+      } else if (event.type === 'session.error' || event.type === 'session.shutdown') {
+        if (!beginClosing()) return;
+        const failedTask = this.store.updateTask(taskId, {
+          status: { state: TaskState.FAILED, timestamp: new Date().toISOString(), message: buildErrorMessage(event) ?? buildStatusMessage('Session failed') },
+        });
+        try {
+          await stream.writeSSE({
+            data: JSON.stringify({
+              statusUpdate: { taskId, status: failedTask.status, final: true },
+            }),
+          });
+        } finally {
+          await finishClosing();
+        }
+      }
+    });
+
+    try {
+      await session.send({ prompt: text });
+    } catch (err) {
+      if (closing) {
+        await waitForClose();
+        return 'SSE';
+      }
+      beginClosing();
+      const failedTask = this.store.updateTask(taskId, {
+        status: { state: TaskState.FAILED, timestamp: new Date().toISOString(), message: buildErrorMessage(err) ?? buildStatusMessage('Session send failed') },
+      });
+      try {
+        await stream.writeSSE({
+          data: JSON.stringify({
+            statusUpdate: { taskId, status: failedTask.status, final: true },
+          }),
+        });
+      } finally {
+        await finishClosing();
+      }
+      return 'SSE';
+    }
+
+    await done.promise;
+    return 'SSE';
   }
 
   private async handleGetTask(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
@@ -222,10 +423,87 @@ export class RpcHandler {
     return rpcSuccess(req.id, { cancelled: true });
   }
 
-  private async handleSubscribeToTask(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
-    void params;
-    void ctx;
-    return rpcSuccess(req.id, { subscribed: true });
+  private async handleSubscribeToTask(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse | 'SSE'> {
+    void req;
+    if (!ctx.sseStream) return 'SSE';
+
+    const stream = ctx.sseStream;
+    if (!isRecord(params) || typeof params.id !== 'string') {
+      await stream.close();
+      return 'SSE';
+    }
+
+    const taskId = params.id;
+    const task = this.store.getTask(taskId);
+    if (!task) {
+      await stream.close();
+      return 'SSE';
+    }
+
+    await stream.writeSSE({ data: JSON.stringify({ task }) });
+
+    const terminalStates: TaskStateValue[] = [
+      TaskState.COMPLETED,
+      TaskState.FAILED,
+      TaskState.CANCELED,
+      TaskState.REJECTED,
+    ];
+
+    if (terminalStates.includes(task.status.state)) {
+      await stream.close();
+      return 'SSE';
+    }
+
+    const done = createDeferred();
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined = setInterval(() => {
+      writeKeepAlive(stream).catch(() => {});
+    }, 15_000);
+    if (typeof heartbeatTimer === 'object' && heartbeatTimer !== null && 'unref' in heartbeatTimer) {
+      (heartbeatTimer as any).unref();
+    }
+
+    let unsubscribe: (() => void) | undefined;
+    const cleanup = (): void => {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = undefined;
+      }
+      if (unsubscribe) {
+        const unsubscribeOnce = unsubscribe;
+        unsubscribe = undefined;
+        unsubscribeOnce();
+      }
+    };
+
+    let closing = false;
+    const closeAndResolve = async (): Promise<void> => {
+      if (closing) return;
+      closing = true;
+      cleanup();
+      try {
+        await stream.close();
+      } finally {
+        done.resolve();
+      }
+    };
+
+    unsubscribe = this.store.subscribeToTask(taskId, (updatedTask) => {
+      const final = terminalStates.includes(updatedTask.status.state);
+      stream.writeSSE({
+        data: JSON.stringify({
+          statusUpdate: { taskId, status: updatedTask.status, final },
+        }),
+      }).then(async () => {
+        if (final) {
+          await closeAndResolve();
+        }
+      }).catch(async () => {
+        await closeAndResolve();
+      });
+    });
+
+    await done.promise;
+    return 'SSE';
   }
 
   private async handleCreatePushConfig(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
@@ -411,6 +689,24 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   if (typeof timer === 'object' && timer !== null && 'unref' in timer && typeof timer.unref === 'function') {
     timer.unref();
   }
+}
+
+function createDeferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+async function writeKeepAlive(stream: SSEStreamingApi): Promise<void> {
+  const writableStream = stream as SSEStreamingApi & { write?: (chunk: string) => Promise<void> };
+  if (typeof writableStream.write === 'function') {
+    await writableStream.write(': keep-alive\n\n');
+    return;
+  }
+
+  await stream.writeSSE({ data: '' });
 }
 
 function buildErrorMessage(event: unknown): A2AMessage | undefined {

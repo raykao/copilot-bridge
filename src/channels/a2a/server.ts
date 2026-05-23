@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { serve } from '@hono/node-server';
+import { streamSSE } from 'hono/streaming';
 import { createLogger } from '../../logger.js';
 import type { A2APlatformConfig, AgentCard, JsonRpcRequest } from '../../types.js';
 import type { CopilotBridge } from '../../core/bridge.js';
 import { TaskStore } from './task-store.js';
 import { SessionMap } from './session-map.js';
-import { RpcErrors, RpcHandler, rpcError } from './rpc-handler.js';
+import { RpcErrors, RpcHandler, rpcError, type RpcContext } from './rpc-handler.js';
 
 const log = createLogger('a2a');
 
@@ -92,6 +93,19 @@ export class A2AServer {
 
       if (!isJsonRpcRequest(body)) {
         return c.json(rpcError(null, RpcErrors.INVALID_REQUEST), 400);
+      }
+
+      const acceptsSse = c.req.header('Accept')?.includes('text/event-stream') ?? false;
+      if (acceptsSse) {
+        const rpcReq = body;
+        return streamSSE(c, async (stream) => {
+          await this.rpcHandler.dispatch(rpcReq, {
+            agentName,
+            allowedAgents,
+            isStreaming: true,
+            sseStream: stream,
+          } as RpcContext);
+        });
       }
 
       const response = await this.rpcHandler.dispatch(body, {

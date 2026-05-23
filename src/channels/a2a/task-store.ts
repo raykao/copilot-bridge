@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Task, TaskStateValue, A2AMessage, Artifact, PushNotificationConfig, TaskStatus } from '../../types.js';
 
+type TaskEventListener = (task: Task) => void;
+
 export interface CreateTaskOptions {
   id?: string;
   contextId?: string;
@@ -17,6 +19,7 @@ export interface ListTasksFilter {
 export class TaskStore {
   private tasks = new Map<string, Task>();
   private pushConfigs = new Map<string, PushNotificationConfig[]>(); // taskId -> configs
+  private taskListeners = new Map<string, Set<TaskEventListener>>();
 
   createTask(opts?: CreateTaskOptions): Task {
     const metadata = {
@@ -39,6 +42,22 @@ export class TaskStore {
 
   getTask(id: string): Task | undefined {
     return this.tasks.get(id);
+  }
+
+  subscribeToTask(taskId: string, listener: TaskEventListener): () => void {
+    let listeners = this.taskListeners.get(taskId);
+    if (!listeners) {
+      listeners = new Set();
+      this.taskListeners.set(taskId, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      const set = this.taskListeners.get(taskId);
+      if (set) {
+        set.delete(listener);
+        if (set.size === 0) this.taskListeners.delete(taskId);
+      }
+    };
   }
 
   updateTask(id: string, update: Partial<Pick<Task, 'status' | 'artifacts' | 'history' | 'metadata'>>): Task {
@@ -65,6 +84,12 @@ export class TaskStore {
     };
 
     this.tasks.set(id, updated);
+    const listeners = this.taskListeners.get(id);
+    if (listeners) {
+      for (const listener of listeners) {
+        listener(updated);
+      }
+    }
     return updated;
   }
 
