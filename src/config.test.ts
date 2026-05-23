@@ -624,6 +624,58 @@ describe('interAgent config validation', () => {
   });
 });
 
+describe('a2a platform validation', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    _resetConfigForTest();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-a2a-test-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    _resetConfigForTest();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('accepts valid a2a config', () => {
+    const cfg = makeConfig();
+    cfg.platforms.a2a = {
+      enabled: true,
+      bots: { copilot: { token: 'tok' } },
+      apiKeys: { k: { secret: 'sec', allowedAgents: ['*'] } },
+    };
+    fs.writeFileSync(configFile, JSON.stringify(cfg));
+    expect(() => loadConfig(configFile)).not.toThrow();
+  });
+
+  it('throws when a2a enabled is not boolean', () => {
+    const cfg = makeConfig();
+    cfg.platforms.a2a = { enabled: 'yes', bots: {} };
+    fs.writeFileSync(configFile, JSON.stringify(cfg));
+    expect(() => loadConfig(configFile)).toThrow('Platform "a2a" requires "enabled" (boolean)');
+  });
+
+  it('throws when a2a bot missing token', () => {
+    const cfg = makeConfig();
+    cfg.platforms.a2a = { enabled: true, bots: { bob: {} } };
+    fs.writeFileSync(configFile, JSON.stringify(cfg));
+    expect(() => loadConfig(configFile)).toThrow('Platform "a2a" bot "bob" missing "token"');
+  });
+
+  it('throws when apiKey missing allowedAgents', () => {
+    const cfg = makeConfig();
+    cfg.platforms.a2a = {
+      enabled: true,
+      bots: { copilot: { token: 'tok' } },
+      apiKeys: { mykey: { secret: 'x' } },
+    };
+    fs.writeFileSync(configFile, JSON.stringify(cfg));
+    expect(() => loadConfig(configFile)).toThrow('Platform "a2a" apiKey "mykey" missing "allowedAgents" (array)');
+  });
+});
+
 describe('access config validation', () => {
   let tmpDir: string;
   let configFile: string;

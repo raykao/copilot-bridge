@@ -54,6 +54,28 @@ function validateAndNormalize(raw: any): AppConfig {
         if (!(bot as any).appToken) throw new Error(`Platform "slack" bot "${botName}" missing "appToken" (required for Socket Mode)`);
         validateAccessConfig(name, botName, (bot as any).access);
       }
+    } else if (name === 'a2a') {
+      if (typeof p.enabled !== 'boolean') {
+        throw new Error('Platform "a2a" requires "enabled" (boolean)');
+      }
+      if (!p.bots || typeof p.bots !== 'object') {
+        throw new Error('Platform "a2a" requires "bots" object');
+      }
+      for (const [botName, bot] of Object.entries(p.bots)) {
+        if (!(bot as any).token) {
+          throw new Error(`Platform "a2a" bot "${botName}" missing "token"`);
+        }
+      }
+      if (p.apiKeys) {
+        for (const [keyName, key] of Object.entries(p.apiKeys)) {
+          if (!(key as any).secret) {
+            throw new Error(`Platform "a2a" apiKey "${keyName}" missing "secret"`);
+          }
+          if (!Array.isArray((key as any).allowedAgents)) {
+            throw new Error(`Platform "a2a" apiKey "${keyName}" missing "allowedAgents" (array)`);
+          }
+        }
+      }
     } else {
       if (!p.url) throw new Error(`Platform "${name}" missing "url"`);
       if (!p.botToken && !p.bots) throw new Error(`Platform "${name}" needs either "botToken" or "bots"`);
