@@ -2,20 +2,36 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { serve } from '@hono/node-server';
 import { createLogger } from '../../logger.js';
-import type { A2APlatformConfig, AgentCard } from '../../types.js';
+import type { A2APlatformConfig, AgentCard, JsonRpcRequest } from '../../types.js';
 import type { CopilotBridge } from '../../core/bridge.js';
+import { TaskStore } from './task-store.js';
+import { SessionMap } from './session-map.js';
+import { RpcErrors, RpcHandler, rpcError } from './rpc-handler.js';
 
 const log = createLogger('a2a');
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isJsonRpcRequest(value: unknown): value is JsonRpcRequest {
+  return isRecord(value)
+    && value.jsonrpc === '2.0'
+    && (typeof value.id === 'string' || typeof value.id === 'number' || value.id === null)
+    && typeof value.method === 'string';
+}
 
 export class A2AServer {
   private app: Hono;
   private config: A2APlatformConfig;
   private bridge: CopilotBridge;
+  private rpcHandler: RpcHandler;
   private server: ReturnType<typeof serve> | null = null;
 
   constructor(config: A2APlatformConfig, bridge: CopilotBridge) {
     this.config = config;
     this.bridge = bridge;
+    this.rpcHandler = new RpcHandler(new TaskStore(), new SessionMap(), this.bridge, this.config);
     this.app = this.buildApp();
   }
 
@@ -67,7 +83,28 @@ export class A2AServer {
         return c.json({ error: 'Forbidden' }, 403);
       }
 
-      return c.json({ jsonrpc: '2.0', id: null, result: null });
+      let body: unknown;
+      try {
+        body = await c.req.json();
+      } catch {
+        return c.json(rpcError(null, RpcErrors.PARSE_ERROR), 400);
+      }
+
+      if (!isJsonRpcRequest(body)) {
+        return c.json(rpcError(null, RpcErrors.INVALID_REQUEST), 400);
+      }
+
+      const response = await this.rpcHandler.dispatch(body, {
+        agentName,
+        allowedAgents,
+        isStreaming: false,
+      });
+
+      if (response === 'SSE') {
+        return c.json(rpcError(body.id, RpcErrors.UNSUPPORTED_OPERATION), 400);
+      }
+
+      return c.json(response);
     });
 
     return app;

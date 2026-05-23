@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { Task, TaskStateValue, A2AMessage, Artifact, PushNotificationConfig } from '../../types.js';
+import type { Task, TaskStateValue, A2AMessage, Artifact, PushNotificationConfig, TaskStatus } from '../../types.js';
 
 export interface CreateTaskOptions {
+  id?: string;
   contextId?: string;
+  status?: TaskStatus;
+  sessionId?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -16,14 +19,18 @@ export class TaskStore {
   private pushConfigs = new Map<string, PushNotificationConfig[]>(); // taskId -> configs
 
   createTask(opts?: CreateTaskOptions): Task {
+    const metadata = {
+      ...(opts?.metadata ?? {}),
+      ...(opts?.sessionId ? { sessionId: opts.sessionId } : {}),
+    };
     const task: Task = {
-      id: randomUUID(),
+      id: opts?.id ?? randomUUID(),
       contextId: opts?.contextId ?? randomUUID(),
-      status: {
+      status: opts?.status ?? {
         state: 'TASK_STATE_SUBMITTED',
         timestamp: new Date().toISOString(),
       },
-      ...(opts?.metadata ? { metadata: { ...opts.metadata } } : {}),
+      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     };
 
     this.tasks.set(task.id, task);
