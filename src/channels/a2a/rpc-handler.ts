@@ -5,6 +5,7 @@ import { TaskState, type A2AMessage, type A2APlatformConfig, type JsonRpcRequest
 import type { CopilotBridge } from '../../core/bridge.js';
 import type { TaskStore } from './task-store.js';
 import type { SessionMap } from './session-map.js';
+import { PushNotificationDispatcher } from './push-notifications.js';
 
 const log = createLogger('a2a:rpc');
 
@@ -69,11 +70,27 @@ interface SendMessageParams {
   configuration?: SendMessageConfiguration | null;
 }
 
+interface CreatePushConfigParams {
+  taskId: string;
+  pushNotificationConfig: {
+    url: string;
+    token?: string;
+  };
+}
+
+interface GetPushConfigParams {
+  taskId: string;
+  pushNotificationConfigId: string;
+}
+
 export class RpcHandler {
   private store: TaskStore;
   private sessionMap?: SessionMap;
   private bridge?: CopilotBridge;
   private config?: A2APlatformConfig;
+  private pushNotificationDispatcher: PushNotificationDispatcher;
+  private pushNotificationsEnabled: boolean;
+  private verifyPushNotificationWebhook: boolean;
   private methods: Map<string, RpcMethodHandler>;
   private pendingPermissions = new Map<string, (resolution: { kind: 'approve-once' } | { kind: 'reject'; feedback?: string }) => void>();
   private taskSseStreams = new Map<string, Set<import('hono/streaming').SSEStreamingApi>>();
@@ -83,6 +100,9 @@ export class RpcHandler {
     this.sessionMap = sessionMap;
     this.bridge = bridge;
     this.config = config;
+    this.pushNotificationDispatcher = new PushNotificationDispatcher(config?.pushNotifications);
+    this.pushNotificationsEnabled = config?.pushNotifications?.enabled ?? false;
+    this.verifyPushNotificationWebhook = config?.pushNotifications?.verifyWebhook ?? false;
     this.methods = new Map<string, RpcMethodHandler>();
     this.registerMethods();
   }
@@ -563,15 +583,42 @@ export class RpcHandler {
   }
 
   private async handleCreatePushConfig(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
-    void params;
     void ctx;
-    return rpcSuccess(req.id, { created: true });
+    const { taskId, pushNotificationConfig } = params as CreatePushConfigParams;
+    const task = this.store.getTask(taskId);
+
+    if (!task) {
+      return rpcError(req.id, RpcErrors.TASK_NOT_FOUND);
+    }
+
+    if (!this.pushNotificationsEnabled) {
+      return rpcError(req.id, RpcErrors.PUSH_NOTIFICATION_NOT_SUPPORTED);
+    }
+
+    if (this.verifyPushNotificationWebhook) {
+      const reachable = await this.pushNotificationDispatcher.verifyWebhookUrl(pushNotificationConfig.url);
+      if (!reachable) {
+        return rpcError(req.id, RpcErrors.INVALID_PARAMS, 'Webhook URL not reachable');
+      }
+    }
+
+    const config = this.store.addPushConfig(taskId, {
+      url: pushNotificationConfig.url,
+      token: pushNotificationConfig.token,
+    });
+    return rpcSuccess(req.id, config);
   }
 
   private async handleGetPushConfig(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
-    void params;
     void ctx;
-    return rpcSuccess(req.id, { config: null });
+    const { taskId, pushNotificationConfigId } = params as GetPushConfigParams;
+    const config = this.store.getPushConfig(taskId, pushNotificationConfigId);
+
+    if (!config) {
+      return rpcError(req.id, RpcErrors.TASK_NOT_FOUND);
+    }
+
+    return rpcSuccess(req.id, config);
   }
 
   private async handleListTasks(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
