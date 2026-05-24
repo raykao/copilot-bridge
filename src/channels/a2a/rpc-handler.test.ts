@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { RpcHandler, RpcErrors, rpcError } from './rpc-handler.js';
 import type { RpcContext } from './rpc-handler.js';
 import { TaskState, type A2APlatformConfig, type JsonRpcRequest, type JsonRpcResponse, type Task } from '../../types.js';
@@ -367,6 +367,46 @@ describe('RpcHandler dispatch', () => {
 
     (handler as any).pendingPermissions.get(task.id)?.({ kind: 'reject' });
     await pending;
+  });
+
+
+  it('dispatchPushIfEnabled: fires on COMPLETED state with final=true', () => {
+    const store = new TaskStore();
+    const config: A2APlatformConfig = {
+      enabled: true,
+      pushNotifications: { enabled: true },
+      bots: { copilot: { token: 'bot-token', agent: 'copilot', model: 'test-model' } },
+    };
+    const handler = new RpcHandler(store, undefined, undefined, config);
+    const task = store.createTask();
+    store.addPushConfig(task.id, { url: 'http://localhost/hook' });
+    const completedTask = store.updateTask(task.id, {
+      status: { state: TaskState.COMPLETED, timestamp: '2026-01-01T00:00:00.000Z' },
+    });
+    const spy = vi.spyOn((handler as any).pushNotificationDispatcher, 'dispatchToTask').mockResolvedValue(undefined);
+
+    (handler as any).dispatchPushIfEnabled(task.id, completedTask);
+
+    expect(spy).toHaveBeenCalledOnce();
+    expect(spy.mock.calls[0]?.[1].statusUpdate?.final).toBe(true);
+    expect(spy.mock.calls[0]?.[1].statusUpdate?.taskId).toBe(task.id);
+  });
+
+  it('dispatchPushIfEnabled: does not fire when pushNotificationsEnabled is false', () => {
+    const store = new TaskStore();
+    const config: A2APlatformConfig = {
+      enabled: true,
+      pushNotifications: { enabled: false },
+      bots: { copilot: { token: 'bot-token', agent: 'copilot', model: 'test-model' } },
+    };
+    const handler = new RpcHandler(store, undefined, undefined, config);
+    const task = store.createTask();
+    store.addPushConfig(task.id, { url: 'http://localhost/hook' });
+    const spy = vi.spyOn((handler as any).pushNotificationDispatcher, 'dispatchToTask').mockResolvedValue(undefined);
+
+    (handler as any).dispatchPushIfEnabled(task.id, task);
+
+    expect(spy).not.toHaveBeenCalled();
   });
 
 

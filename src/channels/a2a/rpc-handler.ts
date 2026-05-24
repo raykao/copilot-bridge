@@ -1,7 +1,7 @@
 import { approveAll, type CopilotSession, type PermissionHandler } from '@github/copilot-sdk';
 import { type SSEStreamingApi } from 'hono/streaming';
 import { createLogger } from '../../logger.js';
-import { TaskState, type A2AMessage, type A2APlatformConfig, type JsonRpcRequest, type JsonRpcResponse, type Part, type Task, type TaskStateValue } from '../../types.js';
+import { TaskState, type A2AMessage, type A2APlatformConfig, type JsonRpcRequest, type JsonRpcResponse, type Part, type StreamResponse, type Task, type TaskStateValue } from '../../types.js';
 import type { CopilotBridge } from '../../core/bridge.js';
 import type { TaskStore } from './task-store.js';
 import type { SessionMap } from './session-map.js';
@@ -175,6 +175,28 @@ export class RpcHandler {
         // stream disconnected -- ignore
       }
     }
+  }
+
+  private dispatchPushIfEnabled(taskId: string, task: Task): void {
+    if (!this.pushNotificationsEnabled) return;
+    const configs = this.store.getPushConfigs(taskId);
+    if (configs.length === 0) return;
+    const terminalStates: TaskStateValue[] = [
+      TaskState.COMPLETED,
+      TaskState.FAILED,
+      TaskState.CANCELED,
+      TaskState.REJECTED,
+    ];
+    const payload: StreamResponse = {
+      statusUpdate: {
+        taskId,
+        status: task.status,
+        final: terminalStates.includes(task.status.state),
+      },
+    };
+    this.pushNotificationDispatcher.dispatchToTask(configs, payload).catch((err) => {
+      log.warn(`push dispatch error for task ${taskId}:`, err);
+    });
   }
 
   private async handleSendMessage(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
@@ -441,6 +463,7 @@ export class RpcHandler {
             }],
           } : {}),
         });
+        this.dispatchPushIfEnabled(taskId, completedTask);
         try {
           await stream.writeSSE({
             data: JSON.stringify({
@@ -455,6 +478,7 @@ export class RpcHandler {
         const failedTask = this.store.updateTask(taskId, {
           status: { state: TaskState.FAILED, timestamp: new Date().toISOString(), message: buildErrorMessage(event) ?? buildStatusMessage('Session failed') },
         });
+        this.dispatchPushIfEnabled(taskId, failedTask);
         try {
           await stream.writeSSE({
             data: JSON.stringify({
@@ -478,6 +502,7 @@ export class RpcHandler {
       const failedTask = this.store.updateTask(taskId, {
         status: { state: TaskState.FAILED, timestamp: new Date().toISOString(), message: buildErrorMessage(err) ?? buildStatusMessage('Session send failed') },
       });
+      this.dispatchPushIfEnabled(taskId, failedTask);
       try {
         await stream.writeSSE({
           data: JSON.stringify({
@@ -536,6 +561,7 @@ export class RpcHandler {
     });
 
     this.emitStatusUpdateToStreams(id, canceledTask).catch(() => {});
+    this.dispatchPushIfEnabled(id, canceledTask);
 
     return rpcSuccess(req.id, { task: canceledTask });
   }
@@ -695,6 +721,7 @@ export class RpcHandler {
       }
 
       this.emitStatusUpdateToStreams(taskId, updatedTask).catch(() => {});
+      this.dispatchPushIfEnabled(taskId, updatedTask);
 
       return new Promise((resolve) => {
         this.pendingPermissions.set(taskId, resolve);
@@ -763,9 +790,11 @@ export class RpcHandler {
         settled = true;
         cleanup();
         cleanupPendingPermission();
-        resolve(this.store.updateTask(taskId, {
+        const completedTask = this.store.updateTask(taskId, {
           status: { state: TaskState.COMPLETED, timestamp: new Date().toISOString() },
-        }));
+        });
+        this.dispatchPushIfEnabled(taskId, completedTask);
+        resolve(completedTask);
       };
 
       const resolveFailed = (message?: A2AMessage): void => {
@@ -773,13 +802,15 @@ export class RpcHandler {
         settled = true;
         cleanup();
         cleanupPendingPermission();
-        resolve(this.store.updateTask(taskId, {
+        const failedTask = this.store.updateTask(taskId, {
           status: {
             state: TaskState.FAILED,
             timestamp: new Date().toISOString(),
             message,
           },
-        }));
+        });
+        this.dispatchPushIfEnabled(taskId, failedTask);
+        resolve(failedTask);
       };
 
       timeoutTimer = setTimeout(() => {
