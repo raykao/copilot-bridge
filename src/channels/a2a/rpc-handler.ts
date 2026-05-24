@@ -75,6 +75,8 @@ export class RpcHandler {
   private bridge?: CopilotBridge;
   private config?: A2APlatformConfig;
   private methods: Map<string, RpcMethodHandler>;
+  private pendingPermissions = new Map<string, (resolution: { kind: 'approve-once' } | { kind: 'reject'; feedback?: string }) => void>();
+  private taskSseStreams = new Map<string, Set<import('hono/streaming').SSEStreamingApi>>();
 
   constructor(store: TaskStore, sessionMap?: SessionMap, bridge?: CopilotBridge, config?: A2APlatformConfig) {
     this.store = store;
@@ -112,6 +114,35 @@ export class RpcHandler {
     }
   }
 
+  registerSseStream(taskId: string, stream: SSEStreamingApi): () => void {
+    let streams = this.taskSseStreams.get(taskId);
+    if (!streams) {
+      streams = new Set();
+      this.taskSseStreams.set(taskId, streams);
+    }
+    streams.add(stream);
+    return () => {
+      const s = this.taskSseStreams.get(taskId);
+      if (s) {
+        s.delete(stream);
+        if (s.size === 0) this.taskSseStreams.delete(taskId);
+      }
+    };
+  }
+
+  private async emitStatusUpdateToStreams(taskId: string, task: Task): Promise<void> {
+    const streams = this.taskSseStreams.get(taskId);
+    if (!streams || streams.size === 0) return;
+    const payload = JSON.stringify({ statusUpdate: { taskId, status: task.status, final: false } });
+    for (const stream of streams) {
+      try {
+        await stream.writeSSE({ data: payload });
+      } catch {
+        // stream disconnected -- ignore
+      }
+    }
+  }
+
   private async handleSendMessage(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
     if (!this.bridge || !this.sessionMap || !this.config) {
       return rpcError(req.id, RpcErrors.INTERNAL_ERROR, 'A2A session routing is not configured');
@@ -133,8 +164,21 @@ export class RpcHandler {
       }
 
       if (existingTask.status.state === TaskState.INPUT_REQUIRED) {
-        // TODO(T12): handle approval and continuation messages for input-required tasks.
-        return rpcSuccess(req.id, existingTask);
+        const resolve = this.pendingPermissions.get(existingTask.id);
+        if (!resolve) {
+          return rpcError(req.id, RpcErrors.INTERNAL_ERROR, 'No pending permission for this task');
+        }
+        const approved = text.trim().toLowerCase() === 'approved';
+        if (approved) {
+          resolve({ kind: 'approve-once' });
+        } else {
+          resolve({ kind: 'reject', feedback: text });
+        }
+        this.pendingPermissions.delete(existingTask.id);
+        const resumedTask = this.store.updateTask(existingTask.id, {
+          status: { state: TaskState.WORKING, timestamp },
+        });
+        return rpcSuccess(req.id, resumedTask);
       }
 
       const sessionId = this.sessionMap.getSessionForTask(existingTask.id) ?? getSessionIdFromTask(existingTask);
@@ -167,10 +211,10 @@ export class RpcHandler {
 
     const providedContextId = message.contextId;
     const existingSessionId = providedContextId ? this.sessionMap.getSessionForContext(providedContextId) : undefined;
+    const taskId = crypto.randomUUID();
     const session = existingSessionId
       ? await this.bridge.resumeSession(existingSessionId, this.buildSessionOptions(ctx.agentName))
-      : await this.bridge.createSession(this.buildSessionOptions(ctx.agentName));
-    const taskId = crypto.randomUUID();
+      : await this.bridge.createSession(this.buildSessionOptions(ctx.agentName, taskId));
     const task = this.store.createTask({
       id: taskId,
       contextId: providedContextId,
@@ -223,11 +267,11 @@ export class RpcHandler {
     const existingSessionId = providedContextId
       ? this.sessionMap.getSessionForContext(providedContextId)
       : undefined;
+    const taskId = crypto.randomUUID();
     const session = existingSessionId
       ? await this.bridge.resumeSession(existingSessionId, this.buildSessionOptions(ctx.agentName))
-      : await this.bridge.createSession(this.buildSessionOptions(ctx.agentName));
+      : await this.bridge.createSession(this.buildSessionOptions(ctx.agentName, taskId));
 
-    const taskId = crypto.randomUUID();
     const task = this.store.createTask({
       id: taskId,
       contextId: providedContextId,
@@ -235,6 +279,7 @@ export class RpcHandler {
       status: { state: TaskState.SUBMITTED, timestamp },
     });
     this.sessionMap.link(task.id, task.contextId, session.sessionId);
+    const unregisterSseStream = this.registerSseStream(task.id, stream);
 
     await stream.writeSSE({ data: JSON.stringify({ task }) });
 
@@ -257,6 +302,7 @@ export class RpcHandler {
         unsubscribe = undefined;
         unsubscribeOnce();
       }
+      unregisterSseStream();
     };
 
     let closing = false;
@@ -463,6 +509,7 @@ export class RpcHandler {
     }
 
     let unsubscribe: (() => void) | undefined;
+    const unregisterSseStream = this.registerSseStream(taskId, stream);
     const cleanup = (): void => {
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
@@ -473,6 +520,7 @@ export class RpcHandler {
         unsubscribe = undefined;
         unsubscribeOnce();
       }
+      unregisterSseStream();
     };
 
     let closing = false;
@@ -525,16 +573,49 @@ export class RpcHandler {
     return rpcSuccess(req.id, { tasks: result.tasks });
   }
 
-  private buildSessionOptions(agentName: string): Parameters<CopilotBridge['createSession']>[0] {
+  private buildHitlPermissionHandler(taskId: string): (request: { toolName: string; toolInput: unknown }, invocation: unknown) => Promise<{ kind: 'approve-once' } | { kind: 'reject'; feedback?: string }> {
+    return (_request, _invocation) => {
+      const request = _request as { toolName: string; toolInput: unknown };
+      const timestamp = new Date().toISOString();
+
+      let updatedTask: Task;
+      try {
+        updatedTask = this.store.updateTask(taskId, {
+          status: {
+            state: TaskState.INPUT_REQUIRED,
+            timestamp,
+            message: {
+              role: 'agent',
+              parts: [
+                { kind: 'text', text: `Permission required: ${request.toolName}` },
+                { kind: 'data', data: { kind: 'permission_request', tool: request.toolName, toolInput: request.toolInput } },
+              ],
+            },
+          },
+        });
+      } catch {
+        return Promise.resolve({ kind: 'reject' });
+      }
+
+      this.emitStatusUpdateToStreams(taskId, updatedTask).catch(() => {});
+
+      return new Promise((resolve) => {
+        this.pendingPermissions.set(taskId, resolve);
+      });
+    };
+  }
+
+  private buildSessionOptions(agentName: string, taskId?: string): Parameters<CopilotBridge['createSession']>[0] {
     const bot = this.config?.bots[agentName];
     const home = process.env.HOME;
+    const onPermissionRequest = taskId ? this.buildHitlPermissionHandler(taskId) : approveAll;
     return {
       model: bot?.model,
       agent: bot?.agent,
       workingDirectory: process.cwd(),
       ...(home ? { configDir: `${home}/.copilot` } : {}),
       enableConfigDiscovery: true,
-      onPermissionRequest: approveAll,
+      onPermissionRequest: onPermissionRequest as Parameters<CopilotBridge['createSession']>[0]['onPermissionRequest'],
     };
   }
 
