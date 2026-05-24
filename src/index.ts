@@ -6,6 +6,7 @@ import { formatEvent, formatPermissionRequest, formatUserInputRequest } from './
 import { WorkspaceWatcher, initWorkspace, getWorkspacePath } from './core/workspace-manager.js';
 import { MattermostAdapter } from './channels/mattermost/adapter.js';
 import { StreamingHandler } from './channels/mattermost/streaming.js';
+import { A2AServer } from './channels/a2a/server.js';
 import { initStore, getChannelPrefs, setChannelPrefs, getAllChannelSessions, closeDb, listPermissionRulesForScope, removePermissionRule, clearPermissionRules, getTaskHistory } from './state/store.js';
 import type { StateStore } from './state/types.js';
 import { extractThreadRequest, resolveThreadRoot } from './core/thread-utils.js';
@@ -19,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
-import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig } from './types.js';
+import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig, A2APlatformConfig } from './types.js';
 
 const log = createLogger('bridge');
 
@@ -522,6 +523,15 @@ async function main(): Promise<void> {
     }
   }
 
+  // A2A HTTP server (runs as a parallel server, not a ChannelAdapter)
+  let a2aServer: A2AServer | null = null;
+  const a2aConfig = (config.platforms.a2a as unknown) as A2APlatformConfig | undefined;
+  if (a2aConfig?.enabled) {
+    a2aServer = new A2AServer(a2aConfig, bridge);
+    await a2aServer.start();
+    log.info(`A2A server listening on ${a2aConfig.bind ?? '127.0.0.1'}:${a2aConfig.port ?? 7880}`);
+  }
+
   // Resolve non-UID Slack access entries at startup
   await resolveSlackAccessUsers(config);
 
@@ -697,6 +707,9 @@ async function main(): Promise<void> {
       await streaming.cleanup();
     }
     await bridge.stop();
+    if (a2aServer) {
+      await a2aServer.stop();
+    }
     try { await closeDb(); } catch (err) { log.warn('Failed to close database during shutdown:', err); }
     log.info('Goodbye.');
     process.exit(0);
