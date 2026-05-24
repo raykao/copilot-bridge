@@ -249,6 +249,84 @@ describe('RpcHandler dispatch', () => {
     expect((resp as JsonRpcResponse & { error: { code: number } }).error.code).toBe(-32001);
   });
 
+  describe('SendMessage - INPUT_REQUIRED continuation', () => {
+    function buildInputRequiredHarness(): {
+      handler: RpcHandler;
+      store: TaskStore;
+    } {
+      const store = new TaskStore();
+      const sessionMap = new SessionMap();
+      const bridge = {
+        createSession: async () => ({ sessionId: 'session-1' }),
+        resumeSession: async () => ({ sessionId: 'session-1' }),
+      } as unknown as CopilotBridge;
+      const config: A2APlatformConfig = {
+        enabled: true,
+        bots: { copilot: { token: 'bot-token', agent: 'copilot', model: 'test-model' } },
+      };
+
+      return { handler: new RpcHandler(store, sessionMap, bridge, config), store };
+    }
+
+    function buildContinuationRequest(taskId: string, text: string): JsonRpcRequest {
+      return {
+        jsonrpc: '2.0',
+        id: `continue-${text}`,
+        method: 'SendMessage',
+        params: {
+          message: {
+            role: 'user',
+            parts: [{ kind: 'text', text }],
+          },
+          configuration: { taskId },
+        },
+      };
+    }
+
+    it('resolves pending permission as approve-once when user replies approved', async () => {
+      const { handler, store } = buildInputRequiredHarness();
+      const task = store.createTask({
+        status: { state: TaskState.INPUT_REQUIRED, timestamp: '2026-01-01T00:00:00.000Z' },
+      });
+      let capturedResolution: { kind: 'approve-once' } | { kind: 'reject'; feedback?: string } | undefined;
+      (handler as any).pendingPermissions.set(task.id, (resolution: { kind: 'approve-once' } | { kind: 'reject'; feedback?: string }) => {
+        capturedResolution = resolution;
+      });
+
+      const resp = await handler.dispatch(buildContinuationRequest(task.id, 'approved'), ctx) as JsonRpcResponse & { result: Task };
+
+      expect(capturedResolution).toEqual({ kind: 'approve-once' });
+      expect(resp.result.status.state).toBe(TaskState.WORKING);
+    });
+
+    it('resolves pending permission as reject with feedback for non-approved text', async () => {
+      const { handler, store } = buildInputRequiredHarness();
+      const task = store.createTask({
+        status: { state: TaskState.INPUT_REQUIRED, timestamp: '2026-01-01T00:00:00.000Z' },
+      });
+      let capturedResolution: { kind: 'approve-once' } | { kind: 'reject'; feedback?: string } | undefined;
+      (handler as any).pendingPermissions.set(task.id, (resolution: { kind: 'approve-once' } | { kind: 'reject'; feedback?: string }) => {
+        capturedResolution = resolution;
+      });
+
+      const resp = await handler.dispatch(buildContinuationRequest(task.id, 'denied'), ctx) as JsonRpcResponse & { result: Task };
+
+      expect(capturedResolution).toEqual({ kind: 'reject', feedback: 'denied' });
+      expect(resp.result.status.state).toBe(TaskState.WORKING);
+    });
+
+    it('returns INTERNAL_ERROR when INPUT_REQUIRED task has no pending resolver', async () => {
+      const { handler, store } = buildInputRequiredHarness();
+      const task = store.createTask({
+        status: { state: TaskState.INPUT_REQUIRED, timestamp: '2026-01-01T00:00:00.000Z' },
+      });
+
+      const resp = await handler.dispatch(buildContinuationRequest(task.id, 'approved'), ctx);
+
+      expect((resp as JsonRpcResponse & { error: { code: number } }).error.code).toBe(RpcErrors.INTERNAL_ERROR.code);
+    });
+  });
+
 
   it('SubscribeToTask returns SSE when no sseStream provided', async () => {
     const handler = new RpcHandler(new TaskStore());

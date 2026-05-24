@@ -1,4 +1,4 @@
-import { approveAll, type CopilotSession } from '@github/copilot-sdk';
+import { approveAll, type CopilotSession, type PermissionHandler } from '@github/copilot-sdk';
 import { type SSEStreamingApi } from 'hono/streaming';
 import { createLogger } from '../../logger.js';
 import { TaskState, type A2AMessage, type A2APlatformConfig, type JsonRpcRequest, type JsonRpcResponse, type Part, type Task, type TaskStateValue } from '../../types.js';
@@ -178,6 +178,7 @@ export class RpcHandler {
         const resumedTask = this.store.updateTask(existingTask.id, {
           status: { state: TaskState.WORKING, timestamp },
         });
+        this.emitStatusUpdateToStreams(existingTask.id, resumedTask).catch(() => {});
         return rpcSuccess(req.id, resumedTask);
       }
 
@@ -213,7 +214,7 @@ export class RpcHandler {
     const existingSessionId = providedContextId ? this.sessionMap.getSessionForContext(providedContextId) : undefined;
     const taskId = crypto.randomUUID();
     const session = existingSessionId
-      ? await this.bridge.resumeSession(existingSessionId, this.buildSessionOptions(ctx.agentName))
+      ? await this.bridge.resumeSession(existingSessionId, this.buildSessionOptions(ctx.agentName, taskId))
       : await this.bridge.createSession(this.buildSessionOptions(ctx.agentName, taskId));
     const task = this.store.createTask({
       id: taskId,
@@ -269,7 +270,7 @@ export class RpcHandler {
       : undefined;
     const taskId = crypto.randomUUID();
     const session = existingSessionId
-      ? await this.bridge.resumeSession(existingSessionId, this.buildSessionOptions(ctx.agentName))
+      ? await this.bridge.resumeSession(existingSessionId, this.buildSessionOptions(ctx.agentName, taskId))
       : await this.bridge.createSession(this.buildSessionOptions(ctx.agentName, taskId));
 
     const task = this.store.createTask({
@@ -573,9 +574,8 @@ export class RpcHandler {
     return rpcSuccess(req.id, { tasks: result.tasks });
   }
 
-  private buildHitlPermissionHandler(taskId: string): (request: { toolName: string; toolInput: unknown }, invocation: unknown) => Promise<{ kind: 'approve-once' } | { kind: 'reject'; feedback?: string }> {
-    return (_request, _invocation) => {
-      const request = _request as { toolName: string; toolInput: unknown };
+  private buildHitlPermissionHandler(taskId: string): PermissionHandler {
+    return (request, _invocation) => {
       const timestamp = new Date().toISOString();
 
       let updatedTask: Task;
@@ -587,8 +587,8 @@ export class RpcHandler {
             message: {
               role: 'agent',
               parts: [
-                { kind: 'text', text: `Permission required: ${request.toolName}` },
-                { kind: 'data', data: { kind: 'permission_request', tool: request.toolName, toolInput: request.toolInput } },
+                { kind: 'text', text: `Permission required: ${request.kind}` },
+                { kind: 'data', data: { kind: 'permission_request', permissionKind: request.kind, toolCallId: request.toolCallId } },
               ],
             },
           },
@@ -615,7 +615,7 @@ export class RpcHandler {
       workingDirectory: process.cwd(),
       ...(home ? { configDir: `${home}/.copilot` } : {}),
       enableConfigDiscovery: true,
-      onPermissionRequest: onPermissionRequest as Parameters<CopilotBridge['createSession']>[0]['onPermissionRequest'],
+      onPermissionRequest,
     };
   }
 
@@ -645,6 +645,14 @@ export class RpcHandler {
       }
     };
 
+    const cleanupPendingPermission = (): void => {
+      const pendingResolve = this.pendingPermissions.get(taskId);
+      if (pendingResolve) {
+        pendingResolve({ kind: 'reject', feedback: 'Task terminated' });
+        this.pendingPermissions.delete(taskId);
+      }
+    };
+
     const cancel = (): void => {
       if (settled) return;
       settled = true;
@@ -656,6 +664,7 @@ export class RpcHandler {
         if (settled) return;
         settled = true;
         cleanup();
+        cleanupPendingPermission();
         resolve(this.store.updateTask(taskId, {
           status: { state: TaskState.COMPLETED, timestamp: new Date().toISOString() },
         }));
@@ -665,6 +674,7 @@ export class RpcHandler {
         if (settled) return;
         settled = true;
         cleanup();
+        cleanupPendingPermission();
         resolve(this.store.updateTask(taskId, {
           status: {
             state: TaskState.FAILED,
