@@ -507,9 +507,37 @@ export class RpcHandler {
   }
 
   private async handleCancelTask(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
-    void params;
     void ctx;
-    return rpcSuccess(req.id, { cancelled: true });
+    const { id } = params as { id: string };
+    const task = this.store.getTask(id);
+
+    if (!task) {
+      return rpcError(req.id, RpcErrors.TASK_NOT_FOUND);
+    }
+
+    const cancelableStates: TaskStateValue[] = [
+      TaskState.SUBMITTED,
+      TaskState.WORKING,
+      TaskState.INPUT_REQUIRED,
+    ];
+
+    if (!cancelableStates.includes(task.status.state)) {
+      return rpcError(req.id, RpcErrors.TASK_NOT_CANCELABLE);
+    }
+
+    const pendingResolve = this.pendingPermissions.get(id);
+    if (pendingResolve) {
+      pendingResolve({ kind: 'reject', feedback: 'Task cancelled' });
+      this.pendingPermissions.delete(id);
+    }
+
+    const canceledTask = this.store.updateTask(id, {
+      status: { state: TaskState.CANCELED, timestamp: new Date().toISOString() },
+    });
+
+    this.emitStatusUpdateToStreams(id, canceledTask).catch(() => {});
+
+    return rpcSuccess(req.id, { task: canceledTask });
   }
 
   private async handleSubscribeToTask(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse | 'SSE'> {

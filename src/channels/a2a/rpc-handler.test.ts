@@ -139,6 +139,31 @@ describe('RpcHandler dispatch', () => {
     expect(resp.result?.task.id).toBe(task.id);
   });
 
+  it('CancelTask returns TASK_NOT_FOUND for unknown task id', async () => {
+    const handler = new RpcHandler(new TaskStore());
+    const response = await handler.dispatch({ jsonrpc: '2.0', id: 1, method: 'CancelTask', params: { id: 'nonexistent-id' } }, ctx) as JsonRpcResponse & { error?: { code: number } };
+    expect(response.error?.code).toBe(-32001);
+  });
+
+  it('CancelTask returns TASK_NOT_CANCELABLE for a completed task', async () => {
+    const store = new TaskStore();
+    const task = store.createTask({ contextId: 'ctx-1', message: { role: 'user', parts: [{ kind: 'text', text: 'hi' }] } });
+    store.updateTask(task.id, { status: { state: TaskState.COMPLETED, timestamp: new Date().toISOString() } });
+    const handler = new RpcHandler(store);
+    const response = await handler.dispatch({ jsonrpc: '2.0', id: 1, method: 'CancelTask', params: { id: task.id } }, ctx) as JsonRpcResponse & { error?: { code: number } };
+    expect(response.error?.code).toBe(-32002);
+  });
+
+  it('CancelTask transitions a working task to CANCELED and returns the task', async () => {
+    const store = new TaskStore();
+    const task = store.createTask({ contextId: 'ctx-1', message: { role: 'user', parts: [{ kind: 'text', text: 'hi' }] } });
+    store.updateTask(task.id, { status: { state: TaskState.WORKING, timestamp: new Date().toISOString() } });
+    const handler = new RpcHandler(store);
+    const response = await handler.dispatch({ jsonrpc: '2.0', id: 1, method: 'CancelTask', params: { id: task.id } }, ctx) as JsonRpcResponse & { result?: { task?: Task }; error?: unknown };
+    expect(response.error).toBeUndefined();
+    expect(response.result?.task?.status?.state).toBe(TaskState.CANCELED);
+  });
+
   it('ListTasks returns all tasks when no filter', async () => {
     const store = new TaskStore();
     store.createTask();
