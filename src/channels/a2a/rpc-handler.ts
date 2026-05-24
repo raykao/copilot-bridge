@@ -125,7 +125,14 @@ export class RpcHandler {
       const s = this.taskSseStreams.get(taskId);
       if (s) {
         s.delete(stream);
-        if (s.size === 0) this.taskSseStreams.delete(taskId);
+        if (s.size === 0) {
+          this.taskSseStreams.delete(taskId);
+          const pendingResolve = this.pendingPermissions.get(taskId);
+          if (pendingResolve) {
+            pendingResolve({ kind: 'reject', feedback: 'SSE subscriber disconnected' });
+            this.pendingPermissions.delete(taskId);
+          }
+        }
       }
     };
   }
@@ -657,6 +664,7 @@ export class RpcHandler {
       if (settled) return;
       settled = true;
       cleanup();
+      cleanupPendingPermission();
     };
 
     const promise = new Promise<Task>((resolve) => {

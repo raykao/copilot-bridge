@@ -327,6 +327,23 @@ describe('RpcHandler dispatch', () => {
     });
   });
 
+  it('buildHitlPermissionHandler marks task input-required and tracks pending permission', async () => {
+    const store = new TaskStore();
+    const handler = new RpcHandler(store);
+    const task = store.createTask({
+      status: { state: TaskState.WORKING, timestamp: '2026-01-01T00:00:00.000Z' },
+    });
+
+    const permissionHandler = (handler as any).buildHitlPermissionHandler(task.id);
+    const pending = permissionHandler({ kind: 'shell', toolCallId: 'tc-1' });
+
+    expect(store.getTask(task.id)?.status.state).toBe(TaskState.INPUT_REQUIRED);
+    expect((handler as any).pendingPermissions.has(task.id)).toBe(true);
+
+    (handler as any).pendingPermissions.get(task.id)?.({ kind: 'reject' });
+    await pending;
+  });
+
 
   it('SubscribeToTask returns SSE when no sseStream provided', async () => {
     const handler = new RpcHandler(new TaskStore());
