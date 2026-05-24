@@ -206,7 +206,7 @@ export class RpcHandler {
           status: { state: TaskState.WORKING, timestamp },
         });
         this.emitStatusUpdateToStreams(existingTask.id, resumedTask).catch(() => {});
-        return rpcSuccess(req.id, resumedTask);
+        return rpcSuccess(req.id, { task: resumedTask });
       }
 
       const sessionId = this.sessionMap.getSessionForTask(existingTask.id) ?? getSessionIdFromTask(existingTask);
@@ -225,16 +225,16 @@ export class RpcHandler {
       } catch (err) {
         terminalTask.cancel();
         const failedMessage = buildErrorMessage(err) ?? buildStatusMessage('Session send failed');
-        return rpcSuccess(req.id, this.store.updateTask(workingTask.id, {
+        return rpcSuccess(req.id, { task: this.store.updateTask(workingTask.id, {
           status: { state: TaskState.FAILED, timestamp: new Date().toISOString(), message: failedMessage },
-        }));
+        }) });
       }
 
       if (requestConfig.returnImmediately) {
-        return rpcSuccess(req.id, workingTask);
+        return rpcSuccess(req.id, { task: workingTask });
       }
 
-      return rpcSuccess(req.id, await terminalTask.promise);
+      return rpcSuccess(req.id, { task: await terminalTask.promise });
     }
 
     const providedContextId = message.contextId;
@@ -260,16 +260,16 @@ export class RpcHandler {
     } catch (err) {
       terminalTask.cancel();
       const failedMessage = buildErrorMessage(err) ?? buildStatusMessage('Session send failed');
-      return rpcSuccess(req.id, this.store.updateTask(workingTask.id, {
+      return rpcSuccess(req.id, { task: this.store.updateTask(workingTask.id, {
         status: { state: TaskState.FAILED, timestamp: new Date().toISOString(), message: failedMessage },
-      }));
+      }) });
     }
 
     if (requestConfig.returnImmediately) {
-      return rpcSuccess(req.id, workingTask);
+      return rpcSuccess(req.id, { task: workingTask });
     }
 
-    return rpcSuccess(req.id, await terminalTask.promise);
+    return rpcSuccess(req.id, { task: await terminalTask.promise });
   }
 
   private async handleSendStreamingMessage(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse | 'SSE'> {
@@ -488,7 +488,7 @@ export class RpcHandler {
       return rpcError(req.id, RpcErrors.TASK_NOT_FOUND);
     }
 
-    return rpcSuccess(req.id, task);
+    return rpcSuccess(req.id, { task });
   }
 
   private async handleCancelTask(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {

@@ -136,7 +136,7 @@ describe('RpcHandler dispatch', () => {
     const req: JsonRpcRequest = { jsonrpc: '2.0', id: 3, method: 'GetTask', params: { id: task.id } };
     const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & any;
 
-    expect(resp.result?.id).toBe(task.id);
+    expect(resp.result?.task.id).toBe(task.id);
   });
 
   it('ListTasks returns all tasks when no filter', async () => {
@@ -165,10 +165,10 @@ describe('RpcHandler dispatch', () => {
       },
     };
 
-    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: Task };
+    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: { task: Task } };
 
-    expect(resp.result.status.state).toBe(TaskState.COMPLETED);
-    expect(resp.result.contextId).toBe('ctx-1');
+    expect(resp.result.task.status.state).toBe(TaskState.COMPLETED);
+    expect(resp.result.task.contextId).toBe('ctx-1');
     expect(sentPrompts).toEqual(['hello']);
   });
 
@@ -188,10 +188,10 @@ describe('RpcHandler dispatch', () => {
       },
     };
 
-    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: Task };
+    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: { task: Task } };
 
-    expect(resp.result.status.state).toBe(TaskState.COMPLETED);
-    expect(resp.result.contextId).toBe('ctx-null-config');
+    expect(resp.result.task.status.state).toBe(TaskState.COMPLETED);
+    expect(resp.result.task.contextId).toBe('ctx-null-config');
     expect(sentPrompts).toEqual(['hello null config']);
   });
 
@@ -207,9 +207,9 @@ describe('RpcHandler dispatch', () => {
       },
     };
 
-    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: Task };
+    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: { task: Task } };
 
-    expect(resp.result.status.state).toBe(TaskState.WORKING);
+    expect(resp.result.task.status.state).toBe(TaskState.WORKING);
     expect(sentPrompts).toEqual(['fast']);
   });
 
@@ -224,11 +224,11 @@ describe('RpcHandler dispatch', () => {
       },
     };
 
-    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: Task };
-    const statusMessagePart = resp.result.status.message?.parts[0];
+    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: { task: Task } };
+    const statusMessagePart = resp.result.task.status.message?.parts[0];
     const statusText = statusMessagePart?.kind === 'text' ? statusMessagePart.text : '';
 
-    expect(resp.result.status.state).toBe(TaskState.FAILED);
+    expect(resp.result.task.status.state).toBe(TaskState.FAILED);
     expect(statusText).toContain('Connection timeout');
   });
 
@@ -293,10 +293,10 @@ describe('RpcHandler dispatch', () => {
         capturedResolution = resolution;
       });
 
-      const resp = await handler.dispatch(buildContinuationRequest(task.id, 'approved'), ctx) as JsonRpcResponse & { result: Task };
+      const resp = await handler.dispatch(buildContinuationRequest(task.id, 'approved'), ctx) as JsonRpcResponse & { result: { task: Task } };
 
       expect(capturedResolution).toEqual({ kind: 'approve-once' });
-      expect(resp.result.status.state).toBe(TaskState.WORKING);
+      expect(resp.result.task.status.state).toBe(TaskState.WORKING);
     });
 
     it('resolves pending permission as reject with feedback for non-approved text', async () => {
@@ -309,10 +309,10 @@ describe('RpcHandler dispatch', () => {
         capturedResolution = resolution;
       });
 
-      const resp = await handler.dispatch(buildContinuationRequest(task.id, 'denied'), ctx) as JsonRpcResponse & { result: Task };
+      const resp = await handler.dispatch(buildContinuationRequest(task.id, 'denied'), ctx) as JsonRpcResponse & { result: { task: Task } };
 
       expect(capturedResolution).toEqual({ kind: 'reject', feedback: 'denied' });
-      expect(resp.result.status.state).toBe(TaskState.WORKING);
+      expect(resp.result.task.status.state).toBe(TaskState.WORKING);
     });
 
     it('returns INTERNAL_ERROR when INPUT_REQUIRED task has no pending resolver', async () => {
