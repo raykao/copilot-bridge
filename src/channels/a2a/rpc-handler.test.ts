@@ -54,7 +54,7 @@ function parseSseEventData(sse: { events: Array<{ data: string }> }): any[] {
 
 function terminalStatusUpdates(sse: { events: Array<{ data: string }> }): any[] {
   return parseSseEventData(sse)
-    .map((event) => event.statusUpdate)
+    .map((event) => event.result?.statusUpdate)
     .filter((statusUpdate) => statusUpdate?.final === true);
 }
 
@@ -374,7 +374,10 @@ describe('RpcHandler dispatch', () => {
 
     expect(resp).toBe('SSE');
     expect(sse.closed).toBe(true);
-    expect(JSON.parse(sse.events[0].data).task.id).toBe(task.id);
+    const event = JSON.parse(sse.events[0].data);
+    expect(event.jsonrpc).toBe('2.0');
+    expect(event.id).toBe(12);
+    expect(event.result.task.id).toBe(task.id);
   });
 
   it('SubscribeToTask keeps SSE open until a live terminal update', async () => {
@@ -395,11 +398,12 @@ describe('RpcHandler dispatch', () => {
     await waitForAsyncWork();
     expect(sse.closed).toBe(false);
     expect(settled).toBe(false);
-    expect(JSON.parse(sse.events[0].data).task.id).toBe(task.id);
+    expect(parseSseEventData(sse).every((event) => event.jsonrpc === '2.0' && event.id === 13)).toBe(true);
+    expect(JSON.parse(sse.events[0].data).result.task.id).toBe(task.id);
 
     store.updateTask(task.id, { status: { state: TaskState.WORKING } });
     await waitForAsyncWork();
-    const workingUpdate = JSON.parse(sse.events[1].data).statusUpdate;
+    const workingUpdate = JSON.parse(sse.events[1].data).result.statusUpdate;
     expect(workingUpdate.status.state).toBe(TaskState.WORKING);
     expect(workingUpdate.final).toBe(false);
     expect(sse.closed).toBe(false);
@@ -407,7 +411,7 @@ describe('RpcHandler dispatch', () => {
 
     store.updateTask(task.id, { status: { state: TaskState.COMPLETED } });
     const resp = await dispatchPromise;
-    const completedUpdate = JSON.parse(sse.events[2].data).statusUpdate;
+    const completedUpdate = JSON.parse(sse.events[2].data).result.statusUpdate;
     expect(resp).toBe('SSE');
     expect(completedUpdate.status.state).toBe(TaskState.COMPLETED);
     expect(completedUpdate.final).toBe(true);
@@ -450,8 +454,9 @@ describe('RpcHandler dispatch', () => {
     expect(resp).toBe('SSE');
     expect(sentPrompts).toEqual(['stream hello']);
     expect(sse.closed).toBe(true);
-    const submitted = JSON.parse(sse.events[0].data).task as Task;
-    const completed = JSON.parse(sse.events[1].data).statusUpdate;
+    expect(parseSseEventData(sse).every((event) => event.jsonrpc === '2.0' && event.id === 15)).toBe(true);
+    const submitted = JSON.parse(sse.events[0].data).result.task as Task;
+    const completed = JSON.parse(sse.events[1].data).result.statusUpdate;
     const terminalUpdates = terminalStatusUpdates(sse);
     expect(submitted.status.state).toBe(TaskState.SUBMITTED);
     expect(submitted.contextId).toBe('ctx-stream');
@@ -482,7 +487,8 @@ describe('RpcHandler dispatch', () => {
     expect(resp).toBe('SSE');
     expect(sentPrompts).toEqual(['stream throw after event']);
     expect(sse.closed).toBe(true);
-    const submitted = JSON.parse(sse.events[0].data).task as Task;
+    expect(parseSseEventData(sse).every((event) => event.jsonrpc === '2.0' && event.id === 16)).toBe(true);
+    const submitted = JSON.parse(sse.events[0].data).result.task as Task;
     const terminalUpdates = terminalStatusUpdates(sse);
     expect(submitted.status.state).toBe(TaskState.SUBMITTED);
     expect(terminalUpdates).toHaveLength(1);
@@ -517,13 +523,14 @@ describe('RpcHandler dispatch', () => {
     expect(sentPrompts).toEqual(['stream async hello']);
     expect(sse.closed).toBe(false);
     expect(settled).toBe(false);
-    const submitted = JSON.parse(sse.events[0].data).task as Task;
+    expect(parseSseEventData(sse).every((event) => event.jsonrpc === '2.0' && event.id === 17)).toBe(true);
+    const submitted = JSON.parse(sse.events[0].data).result.task as Task;
     expect(submitted.status.state).toBe(TaskState.SUBMITTED);
     expect(submitted.contextId).toBe('ctx-stream-async');
 
     await emitEvent({ type: 'session.idle' });
     const resp = await dispatchPromise;
-    const completed = JSON.parse(sse.events[1].data).statusUpdate;
+    const completed = JSON.parse(sse.events[1].data).result.statusUpdate;
     expect(resp).toBe('SSE');
     expect(completed.taskId).toBe(submitted.id);
     expect(completed.status.state).toBe(TaskState.COMPLETED);

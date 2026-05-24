@@ -83,6 +83,8 @@ interface GetPushConfigParams {
   pushNotificationConfigId: string;
 }
 
+interface SseEntry { stream: SSEStreamingApi; requestId: string | number | null }
+
 export class RpcHandler {
   private store: TaskStore;
   private sessionMap?: SessionMap;
@@ -93,7 +95,7 @@ export class RpcHandler {
   private verifyPushNotificationWebhook: boolean;
   private methods: Map<string, RpcMethodHandler>;
   private pendingPermissions = new Map<string, (resolution: { kind: 'approve-once' } | { kind: 'reject'; feedback?: string }) => void>();
-  private taskSseStreams = new Map<string, Set<import('hono/streaming').SSEStreamingApi>>();
+  private taskSseStreams = new Map<string, Set<SseEntry>>();
 
   constructor(store: TaskStore, sessionMap?: SessionMap, bridge?: CopilotBridge, config?: A2APlatformConfig) {
     this.store = store;
@@ -134,17 +136,18 @@ export class RpcHandler {
     }
   }
 
-  registerSseStream(taskId: string, stream: SSEStreamingApi): () => void {
-    let streams = this.taskSseStreams.get(taskId);
-    if (!streams) {
-      streams = new Set();
-      this.taskSseStreams.set(taskId, streams);
+  registerSseStream(taskId: string, stream: SSEStreamingApi, requestId: string | number | null): () => void {
+    let entries = this.taskSseStreams.get(taskId);
+    if (!entries) {
+      entries = new Set();
+      this.taskSseStreams.set(taskId, entries);
     }
-    streams.add(stream);
+    const entry: SseEntry = { stream, requestId };
+    entries.add(entry);
     return () => {
       const s = this.taskSseStreams.get(taskId);
       if (s) {
-        s.delete(stream);
+        s.delete(entry);
         if (s.size === 0) {
           this.taskSseStreams.delete(taskId);
           const pendingResolve = this.pendingPermissions.get(taskId);
@@ -158,10 +161,14 @@ export class RpcHandler {
   }
 
   private async emitStatusUpdateToStreams(taskId: string, task: Task): Promise<void> {
-    const streams = this.taskSseStreams.get(taskId);
-    if (!streams || streams.size === 0) return;
-    const payload = JSON.stringify({ statusUpdate: { taskId, status: task.status, final: false } });
-    for (const stream of streams) {
+    const entries = this.taskSseStreams.get(taskId);
+    if (!entries || entries.size === 0) return;
+    for (const { stream, requestId } of entries) {
+      const payload = JSON.stringify({
+        jsonrpc: '2.0',
+        id: requestId,
+        result: { statusUpdate: { taskId, status: task.status, final: false } },
+      });
       try {
         await stream.writeSSE({ data: payload });
       } catch {
@@ -307,9 +314,9 @@ export class RpcHandler {
       status: { state: TaskState.SUBMITTED, timestamp },
     });
     this.sessionMap.link(task.id, task.contextId, session.sessionId);
-    const unregisterSseStream = this.registerSseStream(task.id, stream);
+    const unregisterSseStream = this.registerSseStream(task.id, stream, req.id);
 
-    await stream.writeSSE({ data: JSON.stringify({ task }) });
+    await stream.writeSSE({ data: JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { task } }) });
 
     const done = createDeferred();
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined = setInterval(() => {
@@ -362,7 +369,7 @@ export class RpcHandler {
         });
         await stream.writeSSE({
           data: JSON.stringify({
-            statusUpdate: { taskId, status: workingTask.status, final: false },
+            jsonrpc: '2.0', id: req.id, result: { statusUpdate: { taskId, status: workingTask.status, final: false } },
           }),
         });
       } else if (event.type === 'assistant.message_delta') {
@@ -370,7 +377,7 @@ export class RpcHandler {
         textBuffer += delta;
         await stream.writeSSE({
           data: JSON.stringify({
-            artifactUpdate: {
+            jsonrpc: '2.0', id: req.id, result: { artifactUpdate: {
               taskId,
               artifact: {
                 artifactId,
@@ -378,7 +385,7 @@ export class RpcHandler {
               },
               append: true,
               lastChunk: false,
-            },
+            } },
           }),
         });
       } else if (event.type === 'tool.execution_start') {
@@ -387,14 +394,18 @@ export class RpcHandler {
         const input: unknown = event.data?.input ?? event.data?.arguments ?? {};
         await stream.writeSSE({
           data: JSON.stringify({
-            artifactUpdate: {
-              taskId,
-              artifact: {
-                artifactId: crypto.randomUUID(),
-                parts: [{ kind: 'data', data: { kind: 'tool_start', toolName, toolCallId, input } }],
+            jsonrpc: '2.0',
+            id: req.id,
+            result: {
+              artifactUpdate: {
+                taskId,
+                artifact: {
+                  artifactId: crypto.randomUUID(),
+                  parts: [{ kind: 'data', data: { kind: 'tool_start', toolName, toolCallId, input } }],
+                },
+                append: true,
+                lastChunk: false,
               },
-              append: true,
-              lastChunk: false,
             },
           }),
         });
@@ -404,14 +415,18 @@ export class RpcHandler {
         const output: unknown = event.data?.output ?? event.data?.result ?? {};
         await stream.writeSSE({
           data: JSON.stringify({
-            artifactUpdate: {
-              taskId,
-              artifact: {
-                artifactId: crypto.randomUUID(),
-                parts: [{ kind: 'data', data: { kind: 'tool_complete', toolName, toolCallId, output } }],
+            jsonrpc: '2.0',
+            id: req.id,
+            result: {
+              artifactUpdate: {
+                taskId,
+                artifact: {
+                  artifactId: crypto.randomUUID(),
+                  parts: [{ kind: 'data', data: { kind: 'tool_complete', toolName, toolCallId, output } }],
+                },
+                append: true,
+                lastChunk: false,
               },
-              append: true,
-              lastChunk: false,
             },
           }),
         });
@@ -429,7 +444,7 @@ export class RpcHandler {
         try {
           await stream.writeSSE({
             data: JSON.stringify({
-              statusUpdate: { taskId, status: completedTask.status, final: true },
+              jsonrpc: '2.0', id: req.id, result: { statusUpdate: { taskId, status: completedTask.status, final: true } },
             }),
           });
         } finally {
@@ -443,7 +458,7 @@ export class RpcHandler {
         try {
           await stream.writeSSE({
             data: JSON.stringify({
-              statusUpdate: { taskId, status: failedTask.status, final: true },
+              jsonrpc: '2.0', id: req.id, result: { statusUpdate: { taskId, status: failedTask.status, final: true } },
             }),
           });
         } finally {
@@ -466,7 +481,7 @@ export class RpcHandler {
       try {
         await stream.writeSSE({
           data: JSON.stringify({
-            statusUpdate: { taskId, status: failedTask.status, final: true },
+            jsonrpc: '2.0', id: req.id, result: { statusUpdate: { taskId, status: failedTask.status, final: true } },
           }),
         });
       } finally {
@@ -514,7 +529,7 @@ export class RpcHandler {
       return 'SSE';
     }
 
-    await stream.writeSSE({ data: JSON.stringify({ task }) });
+    await stream.writeSSE({ data: JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { task } }) });
 
     const terminalStates: TaskStateValue[] = [
       TaskState.COMPLETED,
@@ -537,7 +552,7 @@ export class RpcHandler {
     }
 
     let unsubscribe: (() => void) | undefined;
-    const unregisterSseStream = this.registerSseStream(taskId, stream);
+    const unregisterSseStream = this.registerSseStream(taskId, stream, req.id);
     const cleanup = (): void => {
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
@@ -567,7 +582,7 @@ export class RpcHandler {
       const final = terminalStates.includes(updatedTask.status.state);
       stream.writeSSE({
         data: JSON.stringify({
-          statusUpdate: { taskId, status: updatedTask.status, final },
+          jsonrpc: '2.0', id: req.id, result: { statusUpdate: { taskId, status: updatedTask.status, final } },
         }),
       }).then(async () => {
         if (final) {
