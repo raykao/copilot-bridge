@@ -49,8 +49,9 @@ describe('PushNotificationDispatcher', () => {
     vi.useFakeTimers();
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: false, status: 500 } as Response)
-      .mockResolvedValueOnce({ ok: true, status: 200 } as Response);
+      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
     vi.stubGlobal('fetch', fetchMock);
 
     const dispatcher = new PushNotificationDispatcher();
@@ -58,7 +59,7 @@ describe('PushNotificationDispatcher', () => {
     await vi.runAllTimersAsync();
     await dispatchPromise;
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('dispatch gives up after MAX_RETRIES', async () => {
