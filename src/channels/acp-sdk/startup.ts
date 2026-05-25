@@ -11,5 +11,5 @@ export async function startAcpSdkServer(
 ): Promise<AcpSdkServer> {
   const bind = acpConfig.bind ?? '127.0.0.1';
   const port = acpConfig.port ?? 3031;
-  return createAcpSdkServer({ bind, port, bots: acpConfig.agents, bridgeVersion }, bridge);
+  return createAcpSdkServer({ bind, port, bots: acpConfig.agents, defaultAgent: acpConfig.defaultAgent, bridgeVersion }, bridge);
 }

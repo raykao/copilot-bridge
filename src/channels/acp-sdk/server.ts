@@ -10,10 +10,11 @@ import { CopilotAgent } from './copilot-agent.js';
 
 const log = createLogger('acp-sdk-server');
 
-function buildAgentCard(name: string, bot: AcpBotConfig): object {
+function buildAgentCard(name: string, bot: AcpBotConfig, wsUrl: string): object {
   return {
     name,
     description: `copilot-bridge agent: ${bot.agent ?? name}`,
+    url: wsUrl,
   };
 }
 
@@ -21,6 +22,7 @@ export interface AcpSdkServerOptions {
   bind: string;
   port: number;
   bots: Record<string, AcpBotConfig>;
+  defaultAgent?: string;
   bridgeVersion: string;
 }
 
@@ -30,13 +32,17 @@ export interface AcpSdkServer {
 }
 
 export async function createAcpSdkServer(opts: AcpSdkServerOptions, bridge: CopilotBridge): Promise<AcpSdkServer> {
+  // boundPort is resolved after listen(); card URLs reference it via closure
+  let boundPort = opts.port;
+
   const httpServer: HttpServer = createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const pathname = url.pathname;
+    const baseWsUrl = `ws://${opts.bind}:${boundPort}`;
 
     if (req.method === 'GET' && pathname === '/v1/agents/cards') {
       const cards = Object.entries(opts.bots).map(([name, bot]) =>
-        buildAgentCard(name, bot),
+        buildAgentCard(name, bot, `${baseWsUrl}/${name}`),
       );
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ cards }));
@@ -53,7 +59,7 @@ export async function createAcpSdkServer(opts: AcpSdkServerOptions, bridge: Copi
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(buildAgentCard(name, bot)));
+      res.end(JSON.stringify(buildAgentCard(name, bot, `${baseWsUrl}/${name}`)));
       return;
     }
 
@@ -66,7 +72,21 @@ export async function createAcpSdkServer(opts: AcpSdkServerOptions, bridge: Copi
 
   httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
     const pathname = new URL(request.url ?? '/', 'http://' + (request.headers.host ?? 'localhost')).pathname;
-    const botName = pathname.slice(1);
+
+    // Resolve bot: /acp → defaultAgent, /<name> → named agent
+    let botName: string;
+    if (pathname === '/acp') {
+      if (!opts.defaultAgent) {
+        log.warn('ACP: /acp upgrade requested but no defaultAgent configured');
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      botName = opts.defaultAgent;
+    } else {
+      botName = pathname.slice(1);
+    }
+
     const botCfg = opts.bots[botName];
 
     if (!botCfg) {
@@ -114,7 +134,7 @@ export async function createAcpSdkServer(opts: AcpSdkServerOptions, bridge: Copi
     ws.on('error', (err) => log.error('acp_sdk_ws_error err=' + String(err)));
   });
 
-  const boundPort = await new Promise<number>((resolve, reject) => {
+  boundPort = await new Promise<number>((resolve, reject) => {
     httpServer.listen(opts.port, opts.bind, () => {
       const addr = httpServer.address() as AddressInfo;
       resolve(addr.port);
