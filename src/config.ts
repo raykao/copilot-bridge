@@ -45,7 +45,10 @@ function validateAndNormalize(raw: any): AppConfig {
   }
   for (const [name, platform] of Object.entries(raw.platforms)) {
     const p = platform as any;
-    if (name === 'slack') {
+    if (name === 'acp') {
+      // ACP uses its own WebSocket server — no URL or bot tokens needed
+      if (!p.agents && !p.bots) throw new Error('Platform "acp" requires "agents"');
+    } else if (name === 'slack') {
       // Slack uses Socket Mode — no URL needed
       if (!p.bots) throw new Error('Platform "slack" requires "bots" with bot tokens');
       validateAccessConfig(name, '(platform)', p.access);
