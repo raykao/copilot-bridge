@@ -19,12 +19,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
-import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig } from './types.js';
+import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig, AcpPlatformConfig } from './types.js';
 import { initTelemetry } from './telemetry.js';
 
 const log = createLogger('bridge');
 const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
 const bridgeVersion = packageJson.version ?? '0.0.0';
+
+function getAcpSdkPlatformConfig(): AcpPlatformConfig | undefined {
+  const config = getConfig();
+  return (config as { platforms?: { acp_sdk?: AcpPlatformConfig } }).platforms?.acp_sdk;
+}
 
 // Active streaming responses, keyed by channelId
 const activeStreams = new Map<string, string>(); // channelId → streamKey
@@ -540,6 +545,17 @@ async function main(): Promise<void> {
     process.on('SIGTERM', () => {
       acpServer.close().catch((err) => log.error('ACP server close error', { err }));
     });
+  }
+
+  // Boot ACP SDK server if platforms.acp_sdk is configured
+  const acpSdkConfig = getAcpSdkPlatformConfig();
+  if (acpSdkConfig) {
+    const { startAcpSdkServer } = await import('./channels/acp-sdk/index.js');
+    const acpSdkServer = await startAcpSdkServer(acpSdkConfig, bridge, bridgeVersion);
+    log.info(`ACP SDK server ready on ws://${acpSdkConfig.bind ?? '127.0.0.1'}:${acpSdkConfig.port ?? 3031}`);
+    process.on('SIGTERM', () =>
+      acpSdkServer.close().catch((err) => log.error('ACP SDK server close error', { err })),
+    );
   }
 
   // Resolve non-UID Slack access entries at startup
