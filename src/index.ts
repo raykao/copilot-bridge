@@ -1,4 +1,4 @@
-import { loadConfig, getConfig, isConfiguredChannel, registerDynamicChannel, markChannelAsDM, getChannelConfig, getPlatformBots, getPlatformAccess, getChannelBotName, isBotAdmin, getHardcodedRules, getConfigRules, reloadConfig, ConfigWatcher, getAcpPlatformConfig } from './config.js';
+import { loadConfig, getConfig, isConfiguredChannel, registerDynamicChannel, markChannelAsDM, getChannelConfig, getPlatformBots, getPlatformAccess, getChannelBotName, isBotAdmin, getHardcodedRules, getConfigRules, reloadConfig, ConfigWatcher } from './config.js';
 import { CopilotBridge } from './core/bridge.js';
 import { SessionManager, parseEnvFile } from './core/session-manager.js';
 import { handleCommand, parseCommand } from './core/command-handler.js';
@@ -20,15 +20,14 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
 import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig, AcpPlatformConfig } from './types.js';
-import { initTelemetry } from './telemetry.js';
 
 const log = createLogger('bridge');
 const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
 const bridgeVersion = packageJson.version ?? '0.0.0';
 
-function getAcpSdkPlatformConfig(): AcpPlatformConfig | undefined {
+function getAcpPlatformConfig(): AcpPlatformConfig | undefined {
   const config = getConfig();
-  return (config as { platforms?: { acp_sdk?: AcpPlatformConfig } }).platforms?.acp_sdk;
+  return (config as { platforms?: { acp?: AcpPlatformConfig } }).platforms?.acp;
 }
 
 // Active streaming responses, keyed by channelId
@@ -39,11 +38,6 @@ const activeStreams = new Map<string, string>(); // channelId → streamKey
 const noReplyChannels = new Set<string>();
 // Tracks whether content was emitted after no_reply (second turn succeeded)
 const noReplyHadContent = new Set<string>();
-// Tracks channels where message_delta events were received this turn.
-// Used to suppress the redundant assistant.message final event when deltas
-// already rendered the full content, preventing double-display in clients.
-const deltaReceivedChannels = new Set<string>();
-
 // Preserve thread context across turn_end stream finalization so auto-started
 // streams stay in the same thread.
 const channelThreadRoots = new Map<string, string>(); // channelId → threadRootId
@@ -373,7 +367,6 @@ function resolveTelemetryConfig(config: AppConfig): { telemetry?: import('@githu
 }
 
 async function main(): Promise<void> {
-  await initTelemetry();
   // Initialize log file early so startup output is captured
   // (uses defaults until config is loaded)
   const logPath = path.join(os.homedir(), '.copilot-bridge', 'copilot-bridge.log');
@@ -536,25 +529,16 @@ async function main(): Promise<void> {
     }
   }
 
+  // Boot ACP server if platforms.acp is configured
   const acpConfig = getAcpPlatformConfig();
-  // Boot ACP WebSocket server if platforms.acp is configured
   if (acpConfig) {
-    const { startAcpServer } = await import('./channels/acp/index.js');
-    const acpServer = await startAcpServer(acpConfig, bridge, bridgeVersion);
-    log.info(`ACP server ready on ws://${acpConfig.bind ?? '127.0.0.1'}:${acpConfig.port ?? 3030}`);
-    process.on('SIGTERM', () => {
-      acpServer.close().catch((err) => log.error('ACP server close error', { err }));
-    });
-  }
-
-  // Boot ACP SDK server if platforms.acp_sdk is configured
-  const acpSdkConfig = getAcpSdkPlatformConfig();
-  if (acpSdkConfig) {
     const { startAcpSdkServer } = await import('./channels/acp-sdk/index.js');
-    const acpSdkServer = await startAcpSdkServer(acpSdkConfig, bridge, bridgeVersion);
-    log.info(`ACP SDK server ready on ws://${acpSdkConfig.bind ?? '127.0.0.1'}:${acpSdkConfig.port ?? 3031}`);
+    const acpServer = await startAcpSdkServer(acpConfig, bridge, bridgeVersion);
+    const acpBind = acpConfig.bind ?? '127.0.0.1';
+    const acpPort = acpConfig.port ?? 3031;
+    log.info(`ACP server ready on ws://${acpBind}:${acpPort}`);
     process.on('SIGTERM', () =>
-      acpSdkServer.close().catch((err) => log.error('ACP SDK server close error', { err })),
+      acpServer.close().catch((err) => log.error('ACP server close error', { err })),
     );
   }
 
@@ -2351,11 +2335,6 @@ async function handleSessionEvent(
       // In verbose mode with an active "Working..." stream that hasn't received
       // content yet, update it in place instead of deleting and recreating.
       // This avoids visible message deletion/churn in the chat.
-      // If deltas were already streamed for this turn, the full content has been
-      // rendered incrementally. Skip assistant.message to prevent double-display.
-      if (event.type === 'assistant.message' && deltaReceivedChannels.has(channelId)) {
-        break;
-      }
 
       if (verbose && streamKey) {
         const streamContent = streaming.getStreamContent(streamKey);
@@ -2364,7 +2343,6 @@ async function handleSessionEvent(
             streaming.replaceContent(streamKey, formatted.content);
           } else if (formatted.content) {
             streaming.appendDelta(streamKey, formatted.content);
-            deltaReceivedChannels.add(channelId);
           }
           adapter.setTyping(channelId).catch((err: any) => { log.debug("setTyping failed:", err); });
           break;
@@ -2387,7 +2365,6 @@ async function handleSessionEvent(
           streaming.replaceContent(streamKey, formatted.content);
         } else if (formatted.content) {
           streaming.appendDelta(streamKey, formatted.content);
-          deltaReceivedChannels.add(channelId);
         }
       }
       adapter.setTyping(channelId).catch((err: any) => { log.debug("setTyping failed:", err); });
@@ -2497,7 +2474,6 @@ async function handleSessionEvent(
           await streaming.finalizeStream(streamKey);
           activeStreams.delete(channelId);
         }
-        deltaReceivedChannels.delete(channelId);
       }
       // Finalize stream when the session goes idle (all turns complete).
        if (event.type === 'session.idle') {
@@ -2506,7 +2482,6 @@ async function handleSessionEvent(
         await finalizeActivityFeed(channelId, adapter);
         initialStreamPosted.delete(channelId);
         channelThreadRoots.delete(channelId);
-        deltaReceivedChannels.delete(channelId);
 
          // If no_reply tool was called, handle stream based on whether
         // the SDK's second turn produced any content.

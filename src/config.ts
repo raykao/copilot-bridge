@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AppConfig, ChannelConfig, BotConfig, InterAgentConfig, AccessConfig, BridgeProviderConfig, AcpPlatformConfig } from './types.js';
+import type { AppConfig, ChannelConfig, BotConfig, InterAgentConfig, AccessConfig, BridgeProviderConfig } from './types.js';
 import type { SDKProviderConfig } from './core/bridge.js';
 import { getDynamicChannel } from './state/store.js';
 import { createLogger } from './logger.js';
@@ -69,15 +69,14 @@ function validateAndNormalize(raw: any): AppConfig {
       if (p.port !== undefined && (typeof p.port !== 'number' || !Number.isInteger(p.port) || p.port <= 0)) {
         throw new Error('Platform "acp" port must be a positive integer');
       }
-      if (p.bots !== undefined) {
-        if (p.bots === null || typeof p.bots !== 'object' || Array.isArray(p.bots)) {
-          throw new Error('Platform "acp" "bots" must be an object');
+      if (p.agents !== undefined) {
+        if (p.agents === null || typeof p.agents !== 'object' || Array.isArray(p.agents)) {
+          throw new Error('Platform "acp" "agents" must be an object');
         }
-        for (const [botName, bot] of Object.entries(p.bots)) {
-          if (!bot || typeof bot !== 'object' || Array.isArray(bot)) {
-            throw new Error(`Platform "acp" bot "${botName}" must be an object`);
+        for (const [agentName, agent] of Object.entries(p.agents)) {
+          if (!agent || typeof agent !== 'object' || Array.isArray(agent)) {
+            throw new Error(`Platform "acp" agent "${agentName}" must be an object`);
           }
-          validateAccessConfig(name, botName, (bot as any).access);
         }
       }
     } else {
@@ -391,19 +390,6 @@ export function getConfigPath(): string | null {
   return _configPath;
 }
 
-/**
- * Get the ACP platform config, with defaults applied.
- * Returns undefined if platforms.acp is not configured.
- */
-export function getAcpPlatformConfig(): AcpPlatformConfig | undefined {
-  const raw = getConfig().platforms['acp'] as AcpPlatformConfig | undefined;
-  if (!raw) return undefined;
-  return {
-    port: raw.port ?? 3030,
-    bind: raw.bind ?? '127.0.0.1',
-    bots: raw.bots ?? {},
-  };
-}
 
 /** Result of a config reload attempt. */
 export interface ReloadResult {

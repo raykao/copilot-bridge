@@ -185,7 +185,7 @@ describe('isHardDeny', () => {
 
 // --- reloadConfig tests ---
 
-import { loadConfig, reloadConfig, getConfig, getConfigPath, getAcpPlatformConfig, registerDynamicChannel, markChannelAsDM, _resetConfigForTest } from './config.js';
+import { loadConfig, reloadConfig, getConfig, getConfigPath, registerDynamicChannel, markChannelAsDM, _resetConfigForTest } from './config.js';
 import { describe as d2, it as it2, expect as expect2, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -517,61 +517,6 @@ describe('reloadConfig', () => {
     expect(result.success).toBe(true);
     expect(result.changes.some(c => c.includes('copilot') && c.includes('config updated'))).toBe(true);
     expect(result.restartNeeded).toEqual([]);
-  });
-
-  describe('getAcpPlatformConfig', () => {
-    it('returns undefined when platforms.acp is not configured', () => {
-      fs.writeFileSync(configFile, JSON.stringify(makeConfig()));
-      loadConfig(configFile);
-
-      expect(getAcpPlatformConfig()).toBeUndefined();
-    });
-
-    it('applies defaults when acp config is empty', () => {
-      const cfg = makeConfig();
-      cfg.platforms.acp = {};
-      fs.writeFileSync(configFile, JSON.stringify(cfg));
-      loadConfig(configFile);
-
-      expect(getAcpPlatformConfig()).toEqual({
-        port: 3030,
-        bind: '127.0.0.1',
-        bots: {},
-      });
-    });
-
-    it('preserves configured port, bind, and bots', () => {
-      const cfg = makeConfig();
-      cfg.platforms.acp = {
-        port: 4040,
-        bind: '0.0.0.0',
-        bots: {
-          bob: {
-            agent: 'bob',
-            model: 'claude-sonnet-4.6',
-            workingDirectory: '/workspace/bob',
-            admin: true,
-            token: 'secret-token',
-          },
-        },
-      };
-      fs.writeFileSync(configFile, JSON.stringify(cfg));
-      loadConfig(configFile);
-
-      expect(getAcpPlatformConfig()).toEqual({
-        port: 4040,
-        bind: '0.0.0.0',
-        bots: {
-          bob: {
-            agent: 'bob',
-            model: 'claude-sonnet-4.6',
-            workingDirectory: '/workspace/bob',
-            admin: true,
-            token: 'secret-token',
-          },
-        },
-      });
-    });
   });
 });
 
