@@ -219,6 +219,11 @@ export class CopilotAgent implements Agent {
     log.info(`close_all sessions=${this.sessions.size}`);
     for (const [, entry] of this.sessions) {
       entry.unsubscribe();
+      try {
+        await entry.session.disconnect();
+      } catch {
+        // best-effort
+      }
     }
     this.sessions.clear();
   }
@@ -282,8 +287,8 @@ export class CopilotAgent implements Agent {
             status: 'pending',
           },
           options: [
-            { optionId: 'allow', name: 'Allow', kind: 'always' as schema.PermissionOptionKind },
-            { optionId: 'deny', name: 'Deny', kind: 'reject' as schema.PermissionOptionKind },
+            { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+            { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
           ],
         });
 

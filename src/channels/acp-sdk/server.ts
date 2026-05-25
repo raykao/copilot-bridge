@@ -62,6 +62,7 @@ export async function createAcpSdkServer(opts: AcpSdkServerOptions, bridge: Copi
   });
 
   const wss = new WebSocketServer({ noServer: true });
+  const pendingBots = new Map<WebSocket, AcpBotConfig>();
 
   httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
     const pathname = new URL(request.url ?? '/', 'http://' + (request.headers.host ?? 'localhost')).pathname;
@@ -85,11 +86,20 @@ export async function createAcpSdkServer(opts: AcpSdkServerOptions, bridge: Copi
     }
 
     wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request, botCfg);
+      pendingBots.set(ws, botCfg);
+      wss.emit('connection', ws, request);
     });
   });
 
-  wss.on('connection', (ws: WebSocket, _request: IncomingMessage, botCfg: AcpBotConfig) => {
+  wss.on('connection', (ws: WebSocket, _request: IncomingMessage) => {
+    const botCfg = pendingBots.get(ws);
+    if (!botCfg) {
+      log.warn('acp_sdk_no_botcfg_for_ws');
+      ws.close();
+      return;
+    }
+    pendingBots.delete(ws);
+
     let agentRef: CopilotAgent | undefined;
     const stream = wsStream(ws);
     const connection = new AgentSideConnection((conn) => {
