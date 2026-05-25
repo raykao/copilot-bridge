@@ -448,7 +448,7 @@ export class RpcHandler {
           }),
         });
       } else if (event.type === 'assistant.message_delta') {
-        const delta: string = event.data?.content ?? event.data?.delta ?? '';
+        const delta: string = event.data?.deltaContent ?? event.data?.text ?? event.data?.content ?? event.data?.delta ?? '';
         textBuffer += delta;
         await stream.writeSSE({
           data: JSON.stringify({
