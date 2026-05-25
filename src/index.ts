@@ -19,9 +19,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
-import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig } from './types.js';
+import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig, AcpPlatformConfig } from './types.js';
 
 const log = createLogger('bridge');
+const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
+const bridgeVersion = packageJson.version ?? '0.0.0';
 
 // Active streaming responses, keyed by channelId
 const activeStreams = new Map<string, string>(); // channelId → streamKey
@@ -359,6 +361,11 @@ function resolveTelemetryConfig(config: AppConfig): { telemetry?: import('@githu
   return { telemetry, env };
 }
 
+function getAcpPlatformConfig(): AcpPlatformConfig | undefined {
+  const config = getConfig();
+  return (config as { platforms?: { acp?: AcpPlatformConfig } }).platforms?.acp;
+}
+
 async function main(): Promise<void> {
   // Initialize log file early so startup output is captured
   // (uses defaults until config is loaded)
@@ -620,6 +627,17 @@ async function main(): Promise<void> {
       }
       log.info(`${botName}: discovered ${dmChannels.length} DM(s), ${registered} newly registered`);
     }
+  }
+
+  // Boot ACP server if platforms.acp is configured
+  const acpConfig = getAcpPlatformConfig();
+  if (acpConfig) {
+    const { startAcpSdkServer } = await import('./channels/acp-sdk/index.js');
+    const acpServer = await startAcpSdkServer(acpConfig, bridge, bridgeVersion);
+    log.info(`ACP server ready on ws://${acpConfig.bind ?? '127.0.0.1'}:${acpConfig.port ?? 3031}`);
+    process.on('SIGTERM', () =>
+      acpServer.close().catch((err) => log.error('ACP server close error', { err })),
+    );
   }
 
   log.info('copilot-bridge ready!');
