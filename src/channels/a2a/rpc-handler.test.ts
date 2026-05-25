@@ -54,8 +54,8 @@ function parseSseEventData(sse: { events: Array<{ data: string }> }): any[] {
 
 function terminalStatusUpdates(sse: { events: Array<{ data: string }> }): any[] {
   return parseSseEventData(sse)
-    .map((event) => event.result?.statusUpdate)
-    .filter((statusUpdate) => statusUpdate?.final === true);
+    .map((event) => event.result)
+    .filter((result) => result?.kind === 'status-update' && result.final === true);
 }
 
 function buildRoutingHarness(options: RoutingHarnessOptions = {}): {
@@ -136,7 +136,8 @@ describe('RpcHandler dispatch', () => {
     const req: JsonRpcRequest = { jsonrpc: '2.0', id: 3, method: 'GetTask', params: { id: task.id } };
     const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & any;
 
-    expect(resp.result?.task.id).toBe(task.id);
+    expect(resp.result?.kind).toBe('task');
+    expect(resp.result?.id).toBe(task.id);
   });
 
   it('CancelTask returns TASK_NOT_FOUND for unknown task id', async () => {
@@ -159,9 +160,10 @@ describe('RpcHandler dispatch', () => {
     const task = store.createTask({ contextId: 'ctx-1', message: { role: 'user', parts: [{ kind: 'text', text: 'hi' }] } });
     store.updateTask(task.id, { status: { state: TaskState.WORKING, timestamp: new Date().toISOString() } });
     const handler = new RpcHandler(store);
-    const response = await handler.dispatch({ jsonrpc: '2.0', id: 1, method: 'CancelTask', params: { id: task.id } }, ctx) as JsonRpcResponse & { result?: { task?: Task }; error?: unknown };
+    const response = await handler.dispatch({ jsonrpc: '2.0', id: 1, method: 'CancelTask', params: { id: task.id } }, ctx) as JsonRpcResponse & { result?: Task & { kind: 'task' }; error?: unknown };
     expect(response.error).toBeUndefined();
-    expect(response.result?.task?.status?.state).toBe(TaskState.CANCELED);
+    expect(response.result?.kind).toBe('task');
+    expect(response.result?.status?.state).toBe('canceled');
   });
 
   it('ListTasks returns all tasks when no filter', async () => {
@@ -190,10 +192,11 @@ describe('RpcHandler dispatch', () => {
       },
     };
 
-    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: { task: Task } };
+    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: Task & { kind: 'task' } };
 
-    expect(resp.result.task.status.state).toBe(TaskState.COMPLETED);
-    expect(resp.result.task.contextId).toBe('ctx-1');
+    expect(resp.result.kind).toBe('task');
+    expect(resp.result.status.state).toBe('completed');
+    expect(resp.result.contextId).toBe('ctx-1');
     expect(sentPrompts).toEqual(['hello']);
   });
 
@@ -213,10 +216,11 @@ describe('RpcHandler dispatch', () => {
       },
     };
 
-    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: { task: Task } };
+    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: Task & { kind: 'task' } };
 
-    expect(resp.result.task.status.state).toBe(TaskState.COMPLETED);
-    expect(resp.result.task.contextId).toBe('ctx-null-config');
+    expect(resp.result.kind).toBe('task');
+    expect(resp.result.status.state).toBe('completed');
+    expect(resp.result.contextId).toBe('ctx-null-config');
     expect(sentPrompts).toEqual(['hello null config']);
   });
 
@@ -232,9 +236,10 @@ describe('RpcHandler dispatch', () => {
       },
     };
 
-    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: { task: Task } };
+    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: Task & { kind: 'task' } };
 
-    expect(resp.result.task.status.state).toBe(TaskState.WORKING);
+    expect(resp.result.kind).toBe('task');
+    expect(resp.result.status.state).toBe('working');
     expect(sentPrompts).toEqual(['fast']);
   });
 
@@ -249,11 +254,12 @@ describe('RpcHandler dispatch', () => {
       },
     };
 
-    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: { task: Task } };
-    const statusMessagePart = resp.result.task.status.message?.parts[0];
+    const resp = await handler.dispatch(req, ctx) as JsonRpcResponse & { result: Task & { kind: 'task' } };
+    const statusMessagePart = resp.result.status.message?.parts[0];
     const statusText = statusMessagePart?.kind === 'text' ? statusMessagePart.text : '';
 
-    expect(resp.result.task.status.state).toBe(TaskState.FAILED);
+    expect(resp.result.kind).toBe('task');
+    expect(resp.result.status.state).toBe('failed');
     expect(statusText).toContain('Connection timeout');
   });
 
@@ -318,10 +324,11 @@ describe('RpcHandler dispatch', () => {
         capturedResolution = resolution;
       });
 
-      const resp = await handler.dispatch(buildContinuationRequest(task.id, 'approved'), ctx) as JsonRpcResponse & { result: { task: Task } };
+      const resp = await handler.dispatch(buildContinuationRequest(task.id, 'approved'), ctx) as JsonRpcResponse & { result: Task & { kind: 'task' } };
 
       expect(capturedResolution).toEqual({ kind: 'approve-once' });
-      expect(resp.result.task.status.state).toBe(TaskState.WORKING);
+      expect(resp.result.kind).toBe('task');
+      expect(resp.result.status.state).toBe('working');
     });
 
     it('resolves pending permission as reject with feedback for non-approved text', async () => {
@@ -334,10 +341,11 @@ describe('RpcHandler dispatch', () => {
         capturedResolution = resolution;
       });
 
-      const resp = await handler.dispatch(buildContinuationRequest(task.id, 'denied'), ctx) as JsonRpcResponse & { result: { task: Task } };
+      const resp = await handler.dispatch(buildContinuationRequest(task.id, 'denied'), ctx) as JsonRpcResponse & { result: Task & { kind: 'task' } };
 
       expect(capturedResolution).toEqual({ kind: 'reject', feedback: 'denied' });
-      expect(resp.result.task.status.state).toBe(TaskState.WORKING);
+      expect(resp.result.kind).toBe('task');
+      expect(resp.result.status.state).toBe('working');
     });
 
     it('returns INTERNAL_ERROR when INPUT_REQUIRED task has no pending resolver', async () => {
@@ -442,7 +450,7 @@ describe('RpcHandler dispatch', () => {
     const event = JSON.parse(sse.events[0].data);
     expect(event.jsonrpc).toBe('2.0');
     expect(event.id).toBe(12);
-    expect(event.result.task.id).toBe(task.id);
+    expect(event.result.id).toBe(task.id);
   });
 
   it('SubscribeToTask keeps SSE open until a live terminal update', async () => {
@@ -464,21 +472,23 @@ describe('RpcHandler dispatch', () => {
     expect(sse.closed).toBe(false);
     expect(settled).toBe(false);
     expect(parseSseEventData(sse).every((event) => event.jsonrpc === '2.0' && event.id === 13)).toBe(true);
-    expect(JSON.parse(sse.events[0].data).result.task.id).toBe(task.id);
+    expect(JSON.parse(sse.events[0].data).result.id).toBe(task.id);
 
     store.updateTask(task.id, { status: { state: TaskState.WORKING } });
     await waitForAsyncWork();
-    const workingUpdate = JSON.parse(sse.events[1].data).result.statusUpdate;
-    expect(workingUpdate.status.state).toBe(TaskState.WORKING);
+    const workingUpdate = JSON.parse(sse.events[1].data).result;
+    expect(workingUpdate.kind).toBe('status-update');
+    expect(workingUpdate.status.state).toBe('working');
     expect(workingUpdate.final).toBe(false);
     expect(sse.closed).toBe(false);
     expect(settled).toBe(false);
 
     store.updateTask(task.id, { status: { state: TaskState.COMPLETED } });
     const resp = await dispatchPromise;
-    const completedUpdate = JSON.parse(sse.events[2].data).result.statusUpdate;
+    const completedUpdate = JSON.parse(sse.events[2].data).result;
     expect(resp).toBe('SSE');
-    expect(completedUpdate.status.state).toBe(TaskState.COMPLETED);
+    expect(completedUpdate.kind).toBe('status-update');
+    expect(completedUpdate.status.state).toBe('completed');
     expect(completedUpdate.final).toBe(true);
     expect(sse.closed).toBe(true);
     expect(settled).toBe(true);
@@ -520,13 +530,15 @@ describe('RpcHandler dispatch', () => {
     expect(sentPrompts).toEqual(['stream hello']);
     expect(sse.closed).toBe(true);
     expect(parseSseEventData(sse).every((event) => event.jsonrpc === '2.0' && event.id === 15)).toBe(true);
-    const submitted = JSON.parse(sse.events[0].data).result.task as Task;
-    const completed = JSON.parse(sse.events[1].data).result.statusUpdate;
+    const submitted = JSON.parse(sse.events[0].data).result as Task & { kind: 'task' };
+    const completed = JSON.parse(sse.events[1].data).result;
     const terminalUpdates = terminalStatusUpdates(sse);
-    expect(submitted.status.state).toBe(TaskState.SUBMITTED);
+    expect(submitted.kind).toBe('task');
+    expect(submitted.status.state).toBe('submitted');
     expect(submitted.contextId).toBe('ctx-stream');
     expect(completed.taskId).toBe(submitted.id);
-    expect(completed.status.state).toBe(TaskState.COMPLETED);
+    expect(completed.kind).toBe('status-update');
+    expect(completed.status.state).toBe('completed');
     expect(completed.final).toBe(true);
     expect(terminalUpdates).toHaveLength(1);
   });
@@ -553,12 +565,14 @@ describe('RpcHandler dispatch', () => {
     expect(sentPrompts).toEqual(['stream throw after event']);
     expect(sse.closed).toBe(true);
     expect(parseSseEventData(sse).every((event) => event.jsonrpc === '2.0' && event.id === 16)).toBe(true);
-    const submitted = JSON.parse(sse.events[0].data).result.task as Task;
+    const submitted = JSON.parse(sse.events[0].data).result as Task & { kind: 'task' };
     const terminalUpdates = terminalStatusUpdates(sse);
-    expect(submitted.status.state).toBe(TaskState.SUBMITTED);
+    expect(submitted.kind).toBe('task');
+    expect(submitted.status.state).toBe('submitted');
     expect(terminalUpdates).toHaveLength(1);
     expect(terminalUpdates[0].taskId).toBe(submitted.id);
-    expect(terminalUpdates[0].status.state).toBe(TaskState.COMPLETED);
+    expect(terminalUpdates[0].kind).toBe('status-update');
+    expect(terminalUpdates[0].status.state).toBe('completed');
     expect(terminalUpdates[0].final).toBe(true);
   });
 
@@ -589,16 +603,18 @@ describe('RpcHandler dispatch', () => {
     expect(sse.closed).toBe(false);
     expect(settled).toBe(false);
     expect(parseSseEventData(sse).every((event) => event.jsonrpc === '2.0' && event.id === 17)).toBe(true);
-    const submitted = JSON.parse(sse.events[0].data).result.task as Task;
-    expect(submitted.status.state).toBe(TaskState.SUBMITTED);
+    const submitted = JSON.parse(sse.events[0].data).result as Task & { kind: 'task' };
+    expect(submitted.kind).toBe('task');
+    expect(submitted.status.state).toBe('submitted');
     expect(submitted.contextId).toBe('ctx-stream-async');
 
     await emitEvent({ type: 'session.idle' });
     const resp = await dispatchPromise;
-    const completed = JSON.parse(sse.events[1].data).result.statusUpdate;
+    const completed = JSON.parse(sse.events[1].data).result;
     expect(resp).toBe('SSE');
     expect(completed.taskId).toBe(submitted.id);
-    expect(completed.status.state).toBe(TaskState.COMPLETED);
+    expect(completed.kind).toBe('status-update');
+    expect(completed.status.state).toBe('completed');
     expect(completed.final).toBe(true);
     expect(sse.closed).toBe(true);
     expect(settled).toBe(true);

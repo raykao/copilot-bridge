@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { A2AServer } from './server.js';
-import { TaskState, type A2APlatformConfig, type AgentCard } from '../../types.js';
+import { type A2APlatformConfig, type AgentCard } from '../../types.js';
 import type { CopilotBridge } from '../../core/bridge.js';
 import type { Hono } from 'hono';
 
@@ -134,16 +134,16 @@ describe('A2A wire protocol: JSON-RPC 2.0 envelope', () => {
     expect(body.result).toBeUndefined();
   });
 
-  it('GetTask returns result.task shape on known task', async () => {
+  it('GetTask returns flat task shape on known task', async () => {
     const send = await rpc(app, 'SendMessage', messageParams('create task', { returnImmediately: true }));
-    const taskId = send.body.result.task.id as string;
+    const taskId = send.body.result.id as string;
     const { body } = await rpc(app, 'GetTask', { id: taskId });
 
     expect(body.jsonrpc).toBe('2.0');
     expect(body.id).toBe(1);
-    expect(body.result.task).toBeDefined();
-    expect(typeof body.result.task.id).toBe('string');
-    expect(typeof body.result.task.status.state).toBe('string');
+    expect(body.result.kind).toBe('task');
+    expect(typeof body.result.id).toBe('string');
+    expect(typeof body.result.status.state).toBe('string');
     expect(body.error).toBeUndefined();
   });
 
@@ -152,7 +152,7 @@ describe('A2A wire protocol: JSON-RPC 2.0 envelope', () => {
 
     expect(body.result).toBeTypeOf('object');
     expect(Array.isArray(body.result.tasks)).toBe(true);
-    expect(body.result.task).toBeUndefined();
+    expect(body.result.kind).toBeUndefined();
   });
 
   it('CancelTask returns TASK_NOT_FOUND error for unknown id', async () => {
@@ -171,7 +171,7 @@ describe('A2A wire protocol: JSON-RPC 2.0 envelope', () => {
       await vi.waitFor(() => expect(sentPrompts).toEqual(['complete task']));
       await vi.advanceTimersByTimeAsync(2_000);
       const send = await sendPromise;
-      const taskId = send.body.result.task.id as string;
+      const taskId = send.body.result.id as string;
       const { body } = await rpc(fastApp, 'CancelTask', { id: taskId });
 
       expect(body.error.code).toBe(-32002);
@@ -180,13 +180,14 @@ describe('A2A wire protocol: JSON-RPC 2.0 envelope', () => {
     }
   });
 
-  it('CancelTask on a working task returns result.task with CANCELED state', async () => {
+  it('CancelTask on a working task returns flat task with canceled state', async () => {
     const { app: manualApp } = setupHarness({ manualEvent: true });
     const send = await rpc(manualApp, 'SendMessage', messageParams('working task', { returnImmediately: true }));
-    const taskId = send.body.result.task.id as string;
+    const taskId = send.body.result.id as string;
     const { body } = await rpc(manualApp, 'CancelTask', { id: taskId });
 
-    expect(body.result.task.status.state).toBe(TaskState.CANCELED);
+    expect(body.result.kind).toBe('task');
+    expect(body.result.status.state).toBe('canceled');
     expect(body.error).toBeUndefined();
   });
 
@@ -243,8 +244,8 @@ describe('A2A wire protocol: SSE streaming envelopes', () => {
     expect(events.every((event) => event.jsonrpc === '2.0')).toBe(true);
     expect(events.every((event) => event.id === 'stream-1')).toBe(true);
     expect(events.every((event) => event.result)).toBe(true);
-    expect(events[0].result.task).toBeDefined();
-    expect(events.some((event) => event.result.statusUpdate?.final === true)).toBe(true);
+    expect(events[0].result.kind).toBe('task');
+    expect(events.some((event) => event.result.kind === 'status-update' && event.result.final === true)).toBe(true);
   });
 
   it('SubscribeToTask SSE initial event is JSON-RPC 2.0 envelope', async () => {
@@ -252,7 +253,7 @@ describe('A2A wire protocol: SSE streaming envelopes', () => {
     try {
       const { app: fastApp, sentPrompts } = setupHarness();
       const send = await rpc(fastApp, 'SendMessage', messageParams('subscribe task', { returnImmediately: true }));
-      const taskId = send.body.result.task.id as string;
+      const taskId = send.body.result.id as string;
       const ssePromise = rpcSse(fastApp, 'SubscribeToTask', { id: taskId }, 'subscribe-1');
 
       await vi.waitFor(() => expect(sentPrompts).toEqual(['subscribe task']));
@@ -263,7 +264,7 @@ describe('A2A wire protocol: SSE streaming envelopes', () => {
       expect(status).toBe(200);
       expect(events[0].jsonrpc).toBe('2.0');
       expect(events[0].id).toBe('subscribe-1');
-      expect(events[0].result.task).toBeDefined();
+      expect(events[0].result.kind).toBe('task');
     } finally {
       vi.useRealTimers();
     }

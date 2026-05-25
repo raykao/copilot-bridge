@@ -118,6 +118,18 @@ export class RpcHandler {
     this.methods.set('CreateTaskPushNotificationConfig', this.handleCreatePushConfig.bind(this));
     this.methods.set('GetTaskPushNotificationConfig', this.handleGetPushConfig.bind(this));
     this.methods.set('ListTasks', this.handleListTasks.bind(this));
+    // Spec-style aliases (used by @a2a-js/sdk JsonRpcTransport)
+    this.methods.set('message/send', this.handleSendMessage.bind(this));
+    this.methods.set('message/stream', this.handleSendStreamingMessage.bind(this));
+    this.methods.set('sendMessage', this.handleSendMessage.bind(this));
+    this.methods.set('sendMessageStream', this.handleSendStreamingMessage.bind(this));
+    this.methods.set('tasks/get', this.handleGetTask.bind(this));
+    this.methods.set('tasks/cancel', this.handleCancelTask.bind(this));
+    this.methods.set('tasks/resubscribe', this.handleSubscribeToTask.bind(this));
+    this.methods.set('resubscribeTask', this.handleSubscribeToTask.bind(this));
+    this.methods.set('tasks/pushNotificationConfig/set', this.handleCreatePushConfig.bind(this));
+    this.methods.set('tasks/pushNotificationConfig/get', this.handleGetPushConfig.bind(this));
+    this.methods.set('tasks/list', this.handleListTasks.bind(this));
   }
 
   async dispatch(req: JsonRpcRequest, ctx: RpcContext): Promise<JsonRpcResponse | 'SSE'> {
@@ -167,7 +179,7 @@ export class RpcHandler {
       const payload = JSON.stringify({
         jsonrpc: '2.0',
         id: requestId,
-        result: { statusUpdate: { taskId, status: task.status, final: false } },
+        result: this.buildStatusUpdateResult(taskId, task.status, false),
       });
       try {
         await stream.writeSSE({ data: payload });
@@ -197,6 +209,47 @@ export class RpcHandler {
     this.pushNotificationDispatcher.dispatchToTask(configs, payload).catch((err) => {
       log.warn(`push dispatch error for task ${taskId}:`, err);
     });
+  }
+
+  private buildTaskResult(task: Task): Record<string, unknown> {
+    return {
+      kind: 'task',
+      ...task,
+      status: { ...task.status, state: this.normalizeState(task.status.state) },
+    };
+  }
+
+  private buildStatusUpdateResult(taskId: string, status: Task['status'], final: boolean): Record<string, unknown> {
+    return {
+      kind: 'status-update',
+      taskId,
+      status: { ...status, state: this.normalizeState(status.state) },
+      final,
+    };
+  }
+
+  private normalizeState(state: string): string {
+    const map: Record<string, string> = {
+      SUBMITTED: 'submitted',
+      WORKING: 'working',
+      COMPLETED: 'completed',
+      FAILED: 'failed',
+      CANCELED: 'canceled',
+      CANCELLED: 'canceled',
+      REJECTED: 'rejected',
+      INPUT_REQUIRED: 'input-required',
+      AUTH_REQUIRED: 'auth-required',
+      TASK_STATE_SUBMITTED: 'submitted',
+      TASK_STATE_WORKING: 'working',
+      TASK_STATE_COMPLETED: 'completed',
+      TASK_STATE_FAILED: 'failed',
+      TASK_STATE_CANCELED: 'canceled',
+      TASK_STATE_CANCELLED: 'canceled',
+      TASK_STATE_REJECTED: 'rejected',
+      TASK_STATE_INPUT_REQUIRED: 'input-required',
+      TASK_STATE_AUTH_REQUIRED: 'auth-required',
+    };
+    return map[state] ?? state.toLowerCase().replace(/_/g, '-');
   }
 
   private async handleSendMessage(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
@@ -235,7 +288,7 @@ export class RpcHandler {
           status: { state: TaskState.WORKING, timestamp },
         });
         this.emitStatusUpdateToStreams(existingTask.id, resumedTask).catch(() => {});
-        return rpcSuccess(req.id, { task: resumedTask });
+        return rpcSuccess(req.id, this.buildTaskResult(resumedTask));
       }
 
       const sessionId = this.sessionMap.getSessionForTask(existingTask.id) ?? getSessionIdFromTask(existingTask);
@@ -254,16 +307,16 @@ export class RpcHandler {
       } catch (err) {
         terminalTask.cancel();
         const failedMessage = buildErrorMessage(err) ?? buildStatusMessage('Session send failed');
-        return rpcSuccess(req.id, { task: this.store.updateTask(workingTask.id, {
+        return rpcSuccess(req.id, this.buildTaskResult(this.store.updateTask(workingTask.id, {
           status: { state: TaskState.FAILED, timestamp: new Date().toISOString(), message: failedMessage },
-        }) });
+        })));
       }
 
       if (requestConfig.returnImmediately) {
-        return rpcSuccess(req.id, { task: workingTask });
+        return rpcSuccess(req.id, this.buildTaskResult(workingTask));
       }
 
-      return rpcSuccess(req.id, { task: await terminalTask.promise });
+      return rpcSuccess(req.id, this.buildTaskResult(await terminalTask.promise));
     }
 
     const providedContextId = message.contextId;
@@ -289,16 +342,16 @@ export class RpcHandler {
     } catch (err) {
       terminalTask.cancel();
       const failedMessage = buildErrorMessage(err) ?? buildStatusMessage('Session send failed');
-      return rpcSuccess(req.id, { task: this.store.updateTask(workingTask.id, {
+      return rpcSuccess(req.id, this.buildTaskResult(this.store.updateTask(workingTask.id, {
         status: { state: TaskState.FAILED, timestamp: new Date().toISOString(), message: failedMessage },
-      }) });
+      })));
     }
 
     if (requestConfig.returnImmediately) {
-      return rpcSuccess(req.id, { task: workingTask });
+      return rpcSuccess(req.id, this.buildTaskResult(workingTask));
     }
 
-    return rpcSuccess(req.id, { task: await terminalTask.promise });
+    return rpcSuccess(req.id, this.buildTaskResult(await terminalTask.promise));
   }
 
   private async handleSendStreamingMessage(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse | 'SSE'> {
@@ -338,7 +391,7 @@ export class RpcHandler {
     this.sessionMap.link(task.id, task.contextId, session.sessionId);
     const unregisterSseStream = this.registerSseStream(task.id, stream, req.id);
 
-    await stream.writeSSE({ data: JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { task } }) });
+    await stream.writeSSE({ data: JSON.stringify({ jsonrpc: '2.0', id: req.id, result: this.buildTaskResult(task) }) });
 
     const done = createDeferred();
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined = setInterval(() => {
@@ -391,7 +444,7 @@ export class RpcHandler {
         });
         await stream.writeSSE({
           data: JSON.stringify({
-            jsonrpc: '2.0', id: req.id, result: { statusUpdate: { taskId, status: workingTask.status, final: false } },
+            jsonrpc: '2.0', id: req.id, result: this.buildStatusUpdateResult(taskId, workingTask.status, false),
           }),
         });
       } else if (event.type === 'assistant.message_delta') {
@@ -399,7 +452,8 @@ export class RpcHandler {
         textBuffer += delta;
         await stream.writeSSE({
           data: JSON.stringify({
-            jsonrpc: '2.0', id: req.id, result: { artifactUpdate: {
+            jsonrpc: '2.0', id: req.id, result: {
+              kind: 'artifact-update',
               taskId,
               artifact: {
                 artifactId,
@@ -407,7 +461,7 @@ export class RpcHandler {
               },
               append: true,
               lastChunk: false,
-            } },
+            },
           }),
         });
       } else if (event.type === 'tool.execution_start') {
@@ -419,15 +473,14 @@ export class RpcHandler {
             jsonrpc: '2.0',
             id: req.id,
             result: {
-              artifactUpdate: {
-                taskId,
-                artifact: {
-                  artifactId: crypto.randomUUID(),
-                  parts: [{ kind: 'data', data: { kind: 'tool_start', toolName, toolCallId, input } }],
-                },
-                append: true,
-                lastChunk: false,
+              kind: 'artifact-update',
+              taskId,
+              artifact: {
+                artifactId: crypto.randomUUID(),
+                parts: [{ kind: 'data', data: { kind: 'tool_start', toolName, toolCallId, input } }],
               },
+              append: true,
+              lastChunk: false,
             },
           }),
         });
@@ -440,15 +493,14 @@ export class RpcHandler {
             jsonrpc: '2.0',
             id: req.id,
             result: {
-              artifactUpdate: {
-                taskId,
-                artifact: {
-                  artifactId: crypto.randomUUID(),
-                  parts: [{ kind: 'data', data: { kind: 'tool_complete', toolName, toolCallId, output } }],
-                },
-                append: true,
-                lastChunk: false,
+              kind: 'artifact-update',
+              taskId,
+              artifact: {
+                artifactId: crypto.randomUUID(),
+                parts: [{ kind: 'data', data: { kind: 'tool_complete', toolName, toolCallId, output } }],
               },
+              append: true,
+              lastChunk: false,
             },
           }),
         });
@@ -467,7 +519,7 @@ export class RpcHandler {
         try {
           await stream.writeSSE({
             data: JSON.stringify({
-              jsonrpc: '2.0', id: req.id, result: { statusUpdate: { taskId, status: completedTask.status, final: true } },
+              jsonrpc: '2.0', id: req.id, result: this.buildStatusUpdateResult(taskId, completedTask.status, true),
             }),
           });
         } finally {
@@ -482,7 +534,7 @@ export class RpcHandler {
         try {
           await stream.writeSSE({
             data: JSON.stringify({
-              jsonrpc: '2.0', id: req.id, result: { statusUpdate: { taskId, status: failedTask.status, final: true } },
+              jsonrpc: '2.0', id: req.id, result: this.buildStatusUpdateResult(taskId, failedTask.status, true),
             }),
           });
         } finally {
@@ -506,7 +558,7 @@ export class RpcHandler {
       try {
         await stream.writeSSE({
           data: JSON.stringify({
-            jsonrpc: '2.0', id: req.id, result: { statusUpdate: { taskId, status: failedTask.status, final: true } },
+            jsonrpc: '2.0', id: req.id, result: this.buildStatusUpdateResult(taskId, failedTask.status, true),
           }),
         });
       } finally {
@@ -528,7 +580,7 @@ export class RpcHandler {
       return rpcError(req.id, RpcErrors.TASK_NOT_FOUND);
     }
 
-    return rpcSuccess(req.id, { task });
+    return rpcSuccess(req.id, this.buildTaskResult(task));
   }
 
   private async handleCancelTask(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse> {
@@ -563,7 +615,7 @@ export class RpcHandler {
     this.emitStatusUpdateToStreams(id, canceledTask).catch(() => {});
     this.dispatchPushIfEnabled(id, canceledTask);
 
-    return rpcSuccess(req.id, { task: canceledTask });
+    return rpcSuccess(req.id, this.buildTaskResult(canceledTask));
   }
 
   private async handleSubscribeToTask(params: unknown, ctx: RpcContext, req: JsonRpcRequest): Promise<JsonRpcResponse | 'SSE'> {
@@ -583,7 +635,7 @@ export class RpcHandler {
       return 'SSE';
     }
 
-    await stream.writeSSE({ data: JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { task } }) });
+    await stream.writeSSE({ data: JSON.stringify({ jsonrpc: '2.0', id: req.id, result: this.buildTaskResult(task) }) });
 
     const terminalStates: TaskStateValue[] = [
       TaskState.COMPLETED,
@@ -636,7 +688,7 @@ export class RpcHandler {
       const final = terminalStates.includes(updatedTask.status.state);
       stream.writeSSE({
         data: JSON.stringify({
-          jsonrpc: '2.0', id: req.id, result: { statusUpdate: { taskId, status: updatedTask.status, final } },
+          jsonrpc: '2.0', id: req.id, result: this.buildStatusUpdateResult(taskId, updatedTask.status, final),
         }),
       }).then(async () => {
         if (final) {
