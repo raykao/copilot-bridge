@@ -24,21 +24,20 @@ export interface PlatformConfig {
 }
 
 
-// ACP platform: per-bot config (lives under platforms.acp.bots in config.json)
+// ACP platform: per-agent config (lives under platforms.acp.agents in config.json)
 export interface AcpBotConfig {
   agent?: string;            // agent persona name (maps to AGENTS.md filename)
-  model?: string;            // default model id for sessions under this bot
-  workingDirectory?: string; // absolute path to bot workspace; REQUIRED at runtime
-  admin?: boolean;           // bot can manage other agents
-  access?: AccessConfig;     // user-level access control (unused in Phase 2, reserved)
+  model?: string;            // default model id for sessions under this agent
+  workingDirectory?: string; // absolute path to agent workspace; REQUIRED at runtime
+  admin?: boolean;           // agent can manage other agents
   token?: string;            // optional bearer token for remote deployments
 }
 
 // ACP platform config (lives under platforms.acp in config.json)
 export interface AcpPlatformConfig {
-  port?: number;   // WebSocket port; default 3030
+  port?: number;   // WebSocket port; default 3031
   bind?: string;   // bind address; default "127.0.0.1"
-  bots: Record<string, AcpBotConfig>;
+  agents: Record<string, AcpBotConfig>;
 }
 
 // Channel configuration

@@ -7,5 +7,5 @@ export { type AcpServer };
 export async function startAcpServer(acpConfig: AcpPlatformConfig, bridge: CopilotBridge, bridgeVersion: string): Promise<AcpServer> {
   const bind = acpConfig.bind ?? '127.0.0.1';
   const port = acpConfig.port ?? 3030;
-  return createAcpServer({ bind, port, bots: acpConfig.bots, bridgeVersion }, bridge);
+  return createAcpServer({ bind, port, bots: acpConfig.agents, bridgeVersion }, bridge);
 }

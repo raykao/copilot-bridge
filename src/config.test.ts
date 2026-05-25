@@ -534,18 +534,18 @@ describe('reloadConfig', () => {
       loadConfig(configFile);
 
       expect(getAcpPlatformConfig()).toEqual({
-        port: 3030,
+        port: 3031,
         bind: '127.0.0.1',
-        bots: {},
+        agents: {},
       });
     });
 
-    it('preserves configured port, bind, and bots', () => {
+    it('preserves configured port, bind, and agents', () => {
       const cfg = makeConfig();
       cfg.platforms.acp = {
         port: 4040,
         bind: '0.0.0.0',
-        bots: {
+        agents: {
           bob: {
             agent: 'bob',
             model: 'claude-sonnet-4.6',
@@ -561,7 +561,7 @@ describe('reloadConfig', () => {
       expect(getAcpPlatformConfig()).toEqual({
         port: 4040,
         bind: '0.0.0.0',
-        bots: {
+        agents: {
           bob: {
             agent: 'bob',
             model: 'claude-sonnet-4.6',
