@@ -10,6 +10,7 @@ import { buildCustomAgents } from '../../core/session-manager.js';
 import { evaluateConfigPermissions } from '../../config.js';
 import type { CopilotSession, MCPServerConfig, PermissionRequest, PermissionRequestResult, SessionEvent } from '@github/copilot-sdk';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 const log = createLogger('acp-sdk-agent');
 
@@ -121,8 +122,26 @@ export class CopilotAgent implements Agent {
     }
 
     const text = params.prompt
-      .filter(b => b.type === 'text')
-      .map(b => (b as schema.TextContent).text)
+      .flatMap((b): string[] => {
+        if (b.type === 'text') {
+          return [(b as schema.TextContent).text];
+        }
+        if (b.type === 'resource_link') {
+          const r = b as schema.ResourceLink;
+          const label = r.title ?? r.name;
+          if (r.uri.startsWith('file://')) {
+            const fsPath = r.uri.slice('file://'.length);
+            try {
+              const content = readFileSync(fsPath, 'utf-8');
+              return [`[File: ${label} (${r.uri})]\n${content}`];
+            } catch {
+              return [`[File reference: ${label} (${r.uri}) — could not read]`];
+            }
+          }
+          return [`[Resource: ${label} (${r.uri})]`];
+        }
+        return [];
+      })
       .join('\n');
 
     let unsubscribeIdle = (): void => {};
