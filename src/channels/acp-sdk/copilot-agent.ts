@@ -10,6 +10,7 @@ import { buildCustomAgents } from '../../core/session-manager.js';
 import { evaluateConfigPermissions } from '../../config.js';
 import type { CopilotSession, PermissionRequest, PermissionRequestResult, SessionEvent } from '@github/copilot-sdk';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 const log = createLogger('acp-sdk-agent');
 
@@ -96,6 +97,8 @@ export class CopilotAgent implements Agent {
         agent: agentName,
         model,
         customAgents,
+        // mcpServers from ACP SDK is Array<McpServer> but bridge expects Record<string, MCPServerConfig>.
+        // The bridge manages MCP servers centrally via config, so we don't pass them per-session.
         onPermissionRequest: this.makePermissionHandler(),
       });
     } catch (err) {
@@ -120,19 +123,36 @@ export class CopilotAgent implements Agent {
     }
 
     const text = params.prompt
-      .filter(b => b.type === 'text')
-      .map(b => (b as schema.TextContent).text)
+      .flatMap((b): string[] => {
+        if (b.type === 'text') {
+          return [(b as schema.TextContent).text];
+        }
+        if (b.type === 'resource_link') {
+          const r = b as schema.ResourceLink;
+          const label = r.title ?? r.name;
+          if (r.uri.startsWith('file://')) {
+            const fsPath = r.uri.slice('file://'.length);
+            try {
+              const content = readFileSync(fsPath, 'utf-8');
+              return [`[File: ${label} (${r.uri})]\n${content}`];
+            } catch {
+              return [`[File reference: ${label} (${r.uri}) — could not read]`];
+            }
+          }
+          return [`[Resource: ${label} (${r.uri})]`];
+        }
+        return [];
+      })
       .join('\n');
 
     let unsubscribeIdle = (): void => {};
     const idlePromise = new Promise<schema.PromptResponse>((resolve) => {
       unsubscribeIdle = entry.session.on((event: SessionEvent) => {
-        if (event.type === 'session.idle') {
+        if (event.type === 'session.idle' || event.type === 'session.error') {
           unsubscribeIdle();
-          resolve({ stopReason: 'end_turn' });
-        } else if (event.type === 'session.error') {
-          unsubscribeIdle();
-          resolve({ stopReason: 'end_turn' });
+          resolve({
+            stopReason: entry.abortController.signal.aborted ? 'cancelled' : 'end_turn',
+          });
         }
       });
     });
@@ -169,7 +189,9 @@ export class CopilotAgent implements Agent {
       return { sessionId: params.sessionId } as schema.ResumeSessionResponse;
     }
 
-    const workingDirectory = this.botCfg.workingDirectory ?? process.cwd();
+    const workingDirectory = typeof params.cwd === 'string' && params.cwd.length > 0
+      ? params.cwd
+      : this.botCfg.workingDirectory ?? process.cwd();
     let agentName: string | undefined = this.botCfg.agent;
     const customAgents = buildCustomAgents(workingDirectory);
     if (agentName) {
@@ -185,6 +207,8 @@ export class CopilotAgent implements Agent {
         workingDirectory,
         agent: agentName,
         customAgents,
+        // mcpServers from ACP SDK is Array<McpServer> but bridge expects Record<string, MCPServerConfig>.
+        // The bridge manages MCP servers centrally via config, so we don't pass them per-session.
         onPermissionRequest: this.makePermissionHandler(),
       });
     } catch (err) {
@@ -205,7 +229,13 @@ export class CopilotAgent implements Agent {
     }
 
     entry.unsubscribe();
+    entry.abortController.abort();
     this.sessions.delete(params.sessionId);
+    try {
+      await entry.session.abort();
+    } catch {
+      // best-effort
+    }
     try {
       await entry.session.disconnect();
     } catch {
@@ -266,10 +296,25 @@ export class CopilotAgent implements Agent {
       }
 
       const requestId = randomUUID();
+      const toolCallId = request.toolCallId ?? requestId;
+      try {
+        await this.connection.sessionUpdate({
+          sessionId: invocation.sessionId,
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId,
+            title: request.kind,
+            kind: 'other',
+            status: 'pending',
+          },
+        });
+      } catch {
+        // best-effort: proceed to requestPermission even if notification fails
+      }
       const result = await this.connection.requestPermission({
         sessionId: invocation.sessionId,
         toolCall: {
-          toolCallId: request.toolCallId ?? requestId,
+          toolCallId,
           title: request.kind,
           kind: 'other',
           status: 'pending',

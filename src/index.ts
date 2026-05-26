@@ -375,8 +375,8 @@ async function main(): Promise<void> {
 
   log.info('copilot-bridge starting...');
 
-  // Load configuration
-  const config = loadConfig();
+  // Load configuration (process.argv[2] is an optional config file path override)
+  const config = loadConfig(process.argv[2]);
 
   // Re-init with config-driven settings if provided
   if (config.logging) {
