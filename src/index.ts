@@ -6,6 +6,7 @@ import { formatEvent, formatPermissionRequest, formatUserInputRequest } from './
 import { WorkspaceWatcher, initWorkspace, getWorkspacePath } from './core/workspace-manager.js';
 import { MattermostAdapter } from './channels/mattermost/adapter.js';
 import { StreamingHandler } from './channels/mattermost/streaming.js';
+import { startAcpServers, type AcpTcpServer } from './channels/acp-sdk/startup.js';
 import { initStore, getChannelPrefs, setChannelPrefs, getAllChannelSessions, closeDb, listPermissionRulesForScope, removePermissionRule, clearPermissionRules, getTaskHistory } from './state/store.js';
 import type { StateStore } from './state/types.js';
 import { extractThreadRequest, resolveThreadRoot } from './core/thread-utils.js';
@@ -19,9 +20,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
-import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig } from './types.js';
+import type { ChannelAdapter, AdapterFactory, InboundMessage, InboundReaction, MessageAttachment, AppConfig, DatabaseConfig, AcpPlatformConfig } from './types.js';
 
 const log = createLogger('bridge');
+const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
+const bridgeVersion = packageJson.version ?? '0.0.0';
 
 // Active streaming responses, keyed by channelId
 const activeStreams = new Map<string, string>(); // channelId → streamKey
@@ -359,6 +362,11 @@ function resolveTelemetryConfig(config: AppConfig): { telemetry?: import('@githu
   return { telemetry, env };
 }
 
+function getAcpPlatformConfig(): AcpPlatformConfig | undefined {
+  const config = getConfig();
+  return (config as { platforms?: { acp?: AcpPlatformConfig } }).platforms?.acp;
+}
+
 async function main(): Promise<void> {
   // Initialize log file early so startup output is captured
   // (uses defaults until config is loaded)
@@ -620,6 +628,16 @@ async function main(): Promise<void> {
       }
       log.info(`${botName}: discovered ${dmChannels.length} DM(s), ${registered} newly registered`);
     }
+  }
+
+
+  // Boot ACP server if platforms.acp is configured
+  const acpConfig = getAcpPlatformConfig();
+  if (acpConfig) {
+    const acpServers: AcpTcpServer[] = await startAcpServers(acpConfig, bridge, bridgeVersion);
+    acpServers.forEach((s) =>
+      log.info(`acp_ready agent=${s.agentName} addr=tcp://${acpConfig.bind ?? '127.0.0.1'}:${s.port}`),
+    );
   }
 
   log.info('copilot-bridge ready!');
