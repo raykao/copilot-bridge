@@ -8,7 +8,7 @@ import type { SimplifiedUpdate } from './sdk-event-translator.js';
 import { createLogger } from '../../logger.js';
 import { buildCustomAgents } from '../../core/session-manager.js';
 import { evaluateConfigPermissions } from '../../config.js';
-import type { CopilotSession, MCPServerConfig, PermissionRequest, PermissionRequestResult, SessionEvent } from '@github/copilot-sdk';
+import type { CopilotSession, PermissionRequest, PermissionRequestResult, SessionEvent } from '@github/copilot-sdk';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
@@ -97,7 +97,8 @@ export class CopilotAgent implements Agent {
         agent: agentName,
         model,
         customAgents,
-        mcpServers: params.mcpServers as unknown as Record<string, MCPServerConfig> | undefined,
+        // mcpServers from ACP SDK is Array<McpServer> but bridge expects Record<string, MCPServerConfig>.
+        // The bridge manages MCP servers centrally via config, so we don't pass them per-session.
         onPermissionRequest: this.makePermissionHandler(),
       });
     } catch (err) {
@@ -206,7 +207,8 @@ export class CopilotAgent implements Agent {
         workingDirectory,
         agent: agentName,
         customAgents,
-        mcpServers: params.mcpServers as unknown as Record<string, MCPServerConfig> | undefined,
+        // mcpServers from ACP SDK is Array<McpServer> but bridge expects Record<string, MCPServerConfig>.
+        // The bridge manages MCP servers centrally via config, so we don't pass them per-session.
         onPermissionRequest: this.makePermissionHandler(),
       });
     } catch (err) {
