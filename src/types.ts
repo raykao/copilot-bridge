@@ -28,13 +28,13 @@ export interface AcpBotConfig {
   workingDirectory?: string; // absolute path to agent workspace; REQUIRED at runtime
   admin?: boolean;           // agent can manage other agents
   token?: string;            // optional bearer token for remote deployments
+  port?: number;             // explicit TCP port override; if omitted, auto-assigned from basePort
 }
 
 // ACP platform config (lives under platforms.acp in config.json)
 export interface AcpPlatformConfig {
-  port?: number;          // WebSocket port; default 3031
-  bind?: string;          // bind address; default "127.0.0.1"
-  defaultAgent?: string;  // agent name routed to ws://host:port/acp (spec-conforming path)
+  basePort?: number; // base port for sequential auto-assignment; default 3000
+  bind?: string;     // bind address; default "127.0.0.1"
   agents: Record<string, AcpBotConfig>;
 }
 
