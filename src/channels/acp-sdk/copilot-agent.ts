@@ -127,12 +127,11 @@ export class CopilotAgent implements Agent {
     let unsubscribeIdle = (): void => {};
     const idlePromise = new Promise<schema.PromptResponse>((resolve) => {
       unsubscribeIdle = entry.session.on((event: SessionEvent) => {
-        if (event.type === 'session.idle') {
+        if (event.type === 'session.idle' || event.type === 'session.error') {
           unsubscribeIdle();
-          resolve({ stopReason: 'end_turn' });
-        } else if (event.type === 'session.error') {
-          unsubscribeIdle();
-          resolve({ stopReason: 'end_turn' });
+          resolve({
+            stopReason: entry.abortController.signal.aborted ? 'cancelled' : 'end_turn',
+          });
         }
       });
     });
