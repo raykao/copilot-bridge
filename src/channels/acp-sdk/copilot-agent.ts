@@ -227,7 +227,13 @@ export class CopilotAgent implements Agent {
     }
 
     entry.unsubscribe();
+    entry.abortController.abort();
     this.sessions.delete(params.sessionId);
+    try {
+      await entry.session.abort();
+    } catch {
+      // best-effort
+    }
     try {
       await entry.session.disconnect();
     } catch {
