@@ -188,7 +188,9 @@ export class CopilotAgent implements Agent {
       return { sessionId: params.sessionId } as schema.ResumeSessionResponse;
     }
 
-    const workingDirectory = this.botCfg.workingDirectory ?? process.cwd();
+    const workingDirectory = typeof params.cwd === 'string' && params.cwd.length > 0
+      ? params.cwd
+      : this.botCfg.workingDirectory ?? process.cwd();
     let agentName: string | undefined = this.botCfg.agent;
     const customAgents = buildCustomAgents(workingDirectory);
     if (agentName) {
