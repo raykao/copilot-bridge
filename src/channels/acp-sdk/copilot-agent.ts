@@ -294,10 +294,25 @@ export class CopilotAgent implements Agent {
       }
 
       const requestId = randomUUID();
+      const toolCallId = request.toolCallId ?? requestId;
+      try {
+        await this.connection.sessionUpdate({
+          sessionId: invocation.sessionId,
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId,
+            title: request.kind,
+            kind: 'other',
+            status: 'pending',
+          },
+        });
+      } catch {
+        // best-effort: proceed to requestPermission even if notification fails
+      }
       const result = await this.connection.requestPermission({
         sessionId: invocation.sessionId,
         toolCall: {
-          toolCallId: request.toolCallId ?? requestId,
+          toolCallId,
           title: request.kind,
           kind: 'other',
           status: 'pending',
