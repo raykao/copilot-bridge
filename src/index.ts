@@ -6,6 +6,7 @@ import { formatEvent, formatPermissionRequest, formatUserInputRequest } from './
 import { WorkspaceWatcher, initWorkspace, getWorkspacePath } from './core/workspace-manager.js';
 import { MattermostAdapter } from './channels/mattermost/adapter.js';
 import { StreamingHandler } from './channels/mattermost/streaming.js';
+import { startAcpServers, type AcpTcpServer } from './channels/acp-sdk/startup.js';
 import { initStore, getChannelPrefs, setChannelPrefs, getAllChannelSessions, closeDb, listPermissionRulesForScope, removePermissionRule, clearPermissionRules, getTaskHistory } from './state/store.js';
 import type { StateStore } from './state/types.js';
 import { extractThreadRequest, resolveThreadRoot } from './core/thread-utils.js';
@@ -629,6 +630,15 @@ async function main(): Promise<void> {
     }
   }
 
+
+  // Boot ACP server if platforms.acp is configured
+  const acpConfig = getAcpPlatformConfig();
+  if (acpConfig) {
+    const acpServers: AcpTcpServer[] = await startAcpServers(acpConfig, bridge, bridgeVersion);
+    acpServers.forEach((s) =>
+      log.info(`acp_ready agent=${s.agentName} addr=tcp://${acpConfig.bind ?? '127.0.0.1'}:${s.port}`),
+    );
+  }
 
   log.info('copilot-bridge ready!');
 
