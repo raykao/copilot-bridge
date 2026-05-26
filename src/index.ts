@@ -629,16 +629,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Boot ACP server if platforms.acp is configured
-  const acpConfig = getAcpPlatformConfig();
-  if (acpConfig) {
-    const { startAcpSdkServer } = await import('./channels/acp-sdk/index.js');
-    const acpServer = await startAcpSdkServer(acpConfig, bridge, bridgeVersion);
-    log.info(`ACP server ready on ws://${acpConfig.bind ?? '127.0.0.1'}:${acpConfig.port ?? 3031}`);
-    process.on('SIGTERM', () =>
-      acpServer.close().catch((err) => log.error('ACP server close error', { err })),
-    );
-  }
 
   log.info('copilot-bridge ready!');
 
