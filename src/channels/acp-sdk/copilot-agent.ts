@@ -211,19 +211,21 @@ export class CopilotAgent implements Agent {
     } catch {
       // best-effort
     }
+    this.bridge.releaseSession(params.sessionId);
     log.info(`session_close acpSessionId=${params.sessionId}`);
     return {};
   }
 
   async closeAll(): Promise<void> {
     log.info(`close_all sessions=${this.sessions.size}`);
-    for (const [, entry] of this.sessions) {
+    for (const [sessionId, entry] of this.sessions) {
       entry.unsubscribe();
       try {
         await entry.session.disconnect();
       } catch {
         // best-effort
       }
+      this.bridge.releaseSession(sessionId);
     }
     this.sessions.clear();
   }
