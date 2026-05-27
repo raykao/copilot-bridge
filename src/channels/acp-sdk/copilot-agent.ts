@@ -39,12 +39,14 @@ export function translateToSessionUpdate(
         title: update.toolName,
         kind: 'other',
         status: 'in_progress',
+        rawInput: update.arguments,
       };
     case 'tool_complete':
       return {
         sessionUpdate: 'tool_call_update',
         toolCallId: update.toolCallId,
         status: update.success ? 'completed' : 'failed',
+        rawOutput: update.success ? update.output : (update.error ?? ''),
       };
     case 'completed':
     case 'error':
