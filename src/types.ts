@@ -33,8 +33,9 @@ export interface AcpBotConfig {
 
 // ACP platform config (lives under platforms.acp in config.json)
 export interface AcpPlatformConfig {
-  basePort?: number; // base port for sequential auto-assignment; default 3000
-  bind?: string;     // bind address; default "127.0.0.1"
+  basePort?: number;      // base port for sequential auto-assignment; default 3000
+  bind?: string;          // bind address; default "127.0.0.1"
+  discoveryPort?: number; // HTTP discovery server port; default 4099; set to 0 to disable
   agents: Record<string, AcpBotConfig>;
 }
 
