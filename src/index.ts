@@ -6,7 +6,7 @@ import { formatEvent, formatPermissionRequest, formatUserInputRequest } from './
 import { WorkspaceWatcher, initWorkspace, getWorkspacePath } from './core/workspace-manager.js';
 import { MattermostAdapter } from './channels/mattermost/adapter.js';
 import { StreamingHandler } from './channels/mattermost/streaming.js';
-import { startAcpServers, type AcpTcpServer } from './channels/acp-sdk/startup.js';
+import { startAcpServers, type AcpTcpServer, type DiscoveryServer } from './channels/acp-sdk/startup.js';
 import { initStore, getChannelPrefs, setChannelPrefs, getAllChannelSessions, closeDb, listPermissionRulesForScope, removePermissionRule, clearPermissionRules, getTaskHistory } from './state/store.js';
 import type { StateStore } from './state/types.js';
 import { extractThreadRequest, resolveThreadRoot } from './core/thread-utils.js';
@@ -631,11 +631,14 @@ async function main(): Promise<void> {
   }
 
 
+  let tcpServers: AcpTcpServer[] = [];
+  let discoveryServer: DiscoveryServer | null = null;
+
   // Boot ACP server if platforms.acp is configured
   const acpConfig = getAcpPlatformConfig();
   if (acpConfig) {
-    const acpServers: AcpTcpServer[] = await startAcpServers(acpConfig, bridge, bridgeVersion);
-    acpServers.forEach((s) =>
+    ({ tcpServers, discoveryServer } = await startAcpServers(acpConfig, bridge, bridgeVersion));
+    tcpServers.forEach((s) =>
       log.info(`acp_ready agent=${s.agentName} addr=tcp://${acpConfig.bind ?? '127.0.0.1'}:${s.port}`),
     );
   }
@@ -715,6 +718,8 @@ async function main(): Promise<void> {
       await streaming.cleanup();
     }
     await bridge.stop();
+    if (discoveryServer) await discoveryServer.close().catch(() => {});
+    for (const server of tcpServers) await server.close().catch(() => {});
     try { await closeDb(); } catch (err) { log.warn('Failed to close database during shutdown:', err); }
     log.info('Goodbye.');
     process.exit(0);
